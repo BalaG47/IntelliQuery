@@ -1,0 +1,109 @@
+{
+    "visualizations": [
+      {
+        "type": "summary",
+        "data": {
+          "region": "Atlantic Ocean (±15°)",
+          "time_range": "April 2023",
+          "num_floats": 7,
+          "avg_surface_salinity": 36.12,
+          "min_sal": 35.4,
+          "max_sal": 36.8
+        }
+      },
+      {
+        "type": "map",
+        "title": "ARGO Float Network",
+        "data": {
+          "latitudes": [12.1, -8.4, 5.7, -3.2, 15.9, -10.0, 6.4],
+          "longitudes": [-45.3, -42.5, -47.8, -40.2, -49.5, -43.6, -46.9],
+          "values": [35.6, 36.0, 36.3, 35.4, 36.8, 35.9, 36.2],
+          "ids": ["4801123","4802356","4803459","4804789","4805123","4806451","4807123"]
+        }
+      },
+      {
+        "type": "scatter_plot",
+        "title": "Temperature vs Salinity",
+        "data": {
+          "x": [24.2, 25.5, 23.8, 25.0, 26.1, 24.8, 25.7, 24.6, 22.3, 22.6, 23.5, 22.1, 23.9, 22.7, 22.9, 22.4],
+          "y": [35.6, 36.0, 36.3, 35.4, 36.8, 35.9, 36.2, 35.7, 35.8, 36.0, 36.4, 35.6, 36.5, 36.1, 36.3, 36.0],
+          "colors": [0, 50, 0, 50, 0, 50, 0, 50, 100, 100, 100, 100, 100, 100, 100, 100],
+          "labels": ["Surface","Surface","Surface","Surface","Surface","Surface","Surface","Surface","50m","50m","50m","50m","50m","50m","50m","50m"],
+          "xlabel": "Temperature (°C)",
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "time_series",
+        "title": "Monthly Salinity Evolution",
+        "data": {
+          "series": [
+            {
+              "name": "Surface Salinity",
+              "dates": ["2023-02-15","2023-03-15","2023-04-15","2023-05-15","2023-06-15","2023-07-15"],
+              "values": [35.4,35.6,36.0,36.3,36.5,36.7]
+            },
+            {
+              "name": "100m Depth",
+              "dates": ["2023-02-15","2023-03-15","2023-04-15","2023-05-15","2023-06-15","2023-07-15"],
+              "values": [35.8,35.9,36.1,36.2,36.4,36.5]
+            }
+          ],
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "histogram",
+        "title": "Salinity Distribution",
+        "data": {
+          "values": [35.4,35.6,35.9,36.2,36.0,36.3,35.8,36.5,36.1,36.4,35.7,36.3,36.6,35.9,36.2,36.0,35.6,36.1,36.3,36.4,35.8,36.0,36.3,36.1,36.5,35.9,36.2,36.4,35.7,36.3],
+          "bins": 20,
+          "xlabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "box_plot",
+        "title": "Depth-wise Salinity Analysis",
+        "data": {
+          "series": [
+            { "name": "Surface (0m)", "values": [35.4,35.6,36.0,36.3,36.8,35.9,36.2,35.7] },
+            { "name": "50m Depth", "values": [35.8,36.0,36.4,35.6,36.5,35.9,36.1,36.3] },
+            { "name": "100m Depth", "values": [35.9,36.1,36.5,35.8,36.6,36.0,36.2,36.4] },
+            { "name": "200m Depth", "values": [36.0,36.2,36.6,35.9,36.7,36.1,36.3,36.5] }
+          ],
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "contour_plot",
+        "title": "Atlantic Ocean Salinity Contours",
+        "data": {
+          "x": [-50,-47,-44,-41,-38],
+          "y": [-15,-10,-5,0,5,10],
+          "z": [
+            [35.4,35.6,35.8,36.0,36.2],
+            [35.5,35.7,35.9,36.1,36.3],
+            [35.6,35.8,36.0,36.2,36.4],
+            [35.7,35.9,36.1,36.3,36.5],
+            [35.8,36.0,36.2,36.4,36.6],
+            [35.9,36.1,36.3,36.5,36.7]
+          ],
+          "xlabel": "Longitude (°W)",
+          "ylabel": "Latitude (°N)"
+        }
+      },
+      {
+        "type": "table",
+        "data": [
+          { "float_id":"4801123","lat":12.1,"lon":-45.3,"date":"2023-04-10","surface_salinity":35.6,"temperature":24.2 },
+          { "float_id":"4802356","lat":-8.4,"lon":-42.5,"date":"2023-04-13","surface_salinity":36.0,"temperature":25.5 },
+          { "float_id":"4803459","lat":5.7,"lon":-47.8,"date":"2023-04-15","surface_salinity":36.3,"temperature":23.8 },
+          { "float_id":"4804789","lat":-3.2,"lon":-40.2,"date":"2023-04-18","surface_salinity":35.4,"temperature":25.0 },
+          { "float_id":"4805123","lat":15.9,"lon":-49.5,"date":"2023-04-20","surface_salinity":36.8,"temperature":26.1 },
+          { "float_id":"4806451","lat":-10.0,"lon":-43.6,"date":"2023-04-23","surface_salinity":35.9,"temperature":24.8 },
+          { "float_id":"4807123","lat":6.4,"lon":-46.9,"date":"2023-04-26","surface_salinity":36.2,"temperature":25.7 }
+        ]
+      }
+    ]
+  }
+  

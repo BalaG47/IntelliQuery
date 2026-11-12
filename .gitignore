@@ -1,0 +1,104 @@
+# ==========================================
+# ROOT LEVEL FILTER — ONLY ALLOW THESE FOLDERS
+# ==========================================
+
+# Ignore everything directly inside the root
+/*
+
+# Keep root Git configuration
+!/.gitignore
+
+# Allow these four project directories
+!/context/
+!/floatchat frontend/
+!/flowchat/
+!/visualisation pipeline/
+
+# Floatchat monorepo-level ignores
+# Python runtime and virtual environments
+**/__pycache__/
+**/*.py[cod]
+**/*.pyd
+**/.Python
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+**/pip-wheel-metadata/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.tox/
+**/htmlcov/
+**/.coverage*
+**/coverage.xml
+
+# Local configuration and secrets
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.template
+**/*secret*
+**/*credentials*.json
+**/*service-account*.json
+**/*service_account*.json
+
+# Generated datasets and local data stores
+**/argo_data/
+**/local_nc_files/
+**/data/
+**/done data/
+**/left data/
+**/extraction of files/
+**/chromadb_store/
+**/chroma_db_storage/
+**/chroma_db_storage_fresh/
+**/chroma.sqlite3
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
+# ML / scientific-computing caches and generated artifacts
+**/.cache/
+**/huggingface/
+**/transformers_cache/
+**/torch/
+**/models/
+**/*.pt
+**/*.pth
+**/*.onnx
+**/*.h5
+**/*.hdf5
+**/*.nc
+**/*.grib
+**/*.grb
+**/*.parquet
+**/*.feather
+
+# Node / Vite frontend
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/coverage/
+**/.vite/
+**/*.local
+
+# Logs, temporary files, OS/editor metadata
+**/*.log
+**/logs/
+**/tmp/
+**/temp/
+**/.DS_Store
+**/Thumbs.db
+**/Desktop.ini
+**/.idea/
+**/.vscode/*
+!**/.vscode/extensions.json
+!**/.vscode/settings.json
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Keep dependency lockfiles, source files, migrations, SQL scripts,
+# documentation, and frontend public/src assets under version control.

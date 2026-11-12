@@ -1,0 +1,122 @@
+{
+    "visualizations": [
+      {
+        "type": "summary",
+        "data": {
+          "region": "Pacific Ocean (±10°)",
+          "time_range": "March 2023",
+          "num_floats": 8,
+          "avg_surface_salinity": 34.78,
+          "min_sal": 34.2,
+          "max_sal": 35.4
+        }
+      },
+      {
+        "type": "map",
+        "title": "ARGO Float Network",
+        "data": {
+          "latitudes": [5.2, -2.1, 8.5, -5.0, 12.3, -8.7, 3.1, -1.5],
+          "longitudes": [145.3, 148.7, 152.1, 140.2, 155.8, 142.9, 149.4, 146.8],
+          "values": [34.5, 34.8, 35.0, 34.2, 35.4, 34.6, 34.9, 35.1],
+          "ids": ["3901852", "3902451", "3906001", "3907123", "3908456", "3909789", "3910234", "3911567"]
+        }
+      },
+      {
+        "type": "scatter_plot",
+        "title": "Temperature vs Salinity",
+        "data": {
+          "x": [26.2, 25.8, 27.1, 25.5, 28.3, 25.9, 26.5, 26.1, 24.1, 23.9, 25.2, 23.5, 26.8, 24.2, 24.6, 24.3],
+          "y": [34.5, 34.8, 35.0, 34.2, 35.4, 34.6, 34.9, 35.1, 34.7, 34.9, 35.2, 34.4, 35.6, 34.8, 35.0, 35.3],
+          "colors": [0, 50, 0, 50, 0, 50, 0, 50, 100, 100, 100, 100, 100, 100, 100, 100],
+          "labels": ["Surface", "Surface", "Surface", "Surface", "Surface", "Surface", "Surface", "Surface", "50m", "50m", "50m", "50m", "50m", "50m", "50m", "50m"],
+          "xlabel": "Temperature (°C)",
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "time_series",
+        "title": "Monthly Salinity Evolution",
+        "data": {
+          "series": [
+            {
+              "name": "Surface Salinity",
+              "dates": ["2023-01-15", "2023-02-15", "2023-03-15", "2023-04-15", "2023-05-15", "2023-06-15"],
+              "values": [34.2, 34.4, 34.8, 35.1, 35.3, 35.5]
+            },
+            {
+              "name": "100m Depth",
+              "dates": ["2023-01-15", "2023-02-15", "2023-03-15", "2023-04-15", "2023-05-15", "2023-06-15"],
+              "values": [34.6, 34.7, 34.9, 35.0, 35.1, 35.2]
+            }
+          ],
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "histogram",
+        "title": "Salinity Distribution",
+        "data": {
+          "values": [34.2, 34.5, 34.6, 34.8, 34.9, 35.0, 35.1, 35.4, 34.7, 34.9, 35.2, 34.4, 35.6, 34.8, 35.0, 35.3, 34.3, 34.6, 34.8, 35.1, 34.5, 34.7, 35.0, 35.2, 34.4, 34.9, 35.1, 34.6, 35.3, 34.8],
+          "bins": 20,
+          "xlabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "box_plot",
+        "title": "Depth-wise Salinity Analysis",
+        "data": {
+          "series": [
+            {
+              "name": "Surface (0m)",
+              "values": [34.2, 34.5, 34.8, 35.0, 35.4, 34.6, 34.9, 35.1]
+            },
+            {
+              "name": "50m Depth",
+              "values": [34.7, 34.9, 35.2, 34.4, 35.6, 34.8, 35.0, 35.3]
+            },
+            {
+              "name": "100m Depth",
+              "values": [34.8, 35.0, 35.3, 34.5, 35.7, 34.9, 35.1, 35.4]
+            },
+            {
+              "name": "200m Depth",
+              "values": [34.9, 35.1, 35.4, 34.6, 35.8, 35.0, 35.2, 35.5]
+            }
+          ],
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "contour_plot",
+        "title": "Pacific Ocean Salinity Contours",
+        "data": {
+          "x": [140, 145, 150, 155, 160],
+          "y": [-10, -5, 0, 5, 10, 15],
+          "z": [
+            [34.2, 34.4, 34.6, 34.8, 35.0],
+            [34.3, 34.5, 34.7, 34.9, 35.1],
+            [34.4, 34.6, 34.8, 35.0, 35.2],
+            [34.5, 34.7, 34.9, 35.1, 35.3],
+            [34.6, 34.8, 35.0, 35.2, 35.4],
+            [34.7, 34.9, 35.1, 35.3, 35.5]
+          ],
+          "xlabel": "Longitude (°E)",
+          "ylabel": "Latitude (°N)"
+        }
+      },
+      {
+        "type": "table",
+        "data": [
+          { "float_id": "3901852", "lat": 5.2, "lon": 145.3, "date": "2023-03-12", "surface_salinity": 34.5, "temperature": 26.2 },
+          { "float_id": "3902451", "lat": -2.1, "lon": 148.7, "date": "2023-03-15", "surface_salinity": 34.8, "temperature": 25.8 },
+          { "float_id": "3906001", "lat": 8.5, "lon": 152.1, "date": "2023-03-18", "surface_salinity": 35.0, "temperature": 27.1 },
+          { "float_id": "3907123", "lat": -5.0, "lon": 140.2, "date": "2023-03-20", "surface_salinity": 34.2, "temperature": 25.5 },
+          { "float_id": "3908456", "lat": 12.3, "lon": 155.8, "date": "2023-03-22", "surface_salinity": 35.4, "temperature": 28.3 },
+          { "float_id": "3909789", "lat": -8.7, "lon": 142.9, "date": "2023-03-25", "surface_salinity": 34.6, "temperature": 25.9 },
+          { "float_id": "3910234", "lat": 3.1, "lon": 149.4, "date": "2023-03-27", "surface_salinity": 34.9, "temperature": 26.5 },
+          { "float_id": "3911567", "lat": -1.5, "lon": 146.8, "date": "2023-03-30", "surface_salinity": 35.1, "temperature": 26.1 }
+        ]
+      }
+    ]
+  }
+  

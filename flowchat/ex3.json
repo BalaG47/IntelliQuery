@@ -1,0 +1,108 @@
+{
+    "visualizations": [
+      {
+        "type": "summary",
+        "data": {
+          "region": "Indian Ocean (±20°)",
+          "time_range": "June 2023",
+          "num_floats": 6,
+          "avg_surface_salinity": 35.45,
+          "min_sal": 34.8,
+          "max_sal": 36.3
+        }
+      },
+      {
+        "type": "map",
+        "title": "ARGO Float Network",
+        "data": {
+          "latitudes": [-15.1, 7.3, -8.5, 13.0, -3.6, 9.8],
+          "longitudes": [70.2, 78.6, 65.4, 82.5, 68.1, 80.3],
+          "values": [34.9, 35.6, 35.2, 36.0, 35.0, 36.3],
+          "ids": ["5701201","5702354","5703345","5704987","5705123","5706890"]
+        }
+      },
+      {
+        "type": "scatter_plot",
+        "title": "Temperature vs Salinity",
+        "data": {
+          "x": [28.4,27.1,29.0,26.5,28.0,27.6,25.1,25.3,24.8,24.0,23.7,23.5,24.2,23.9,24.1,23.8],
+          "y": [34.9,35.6,35.2,36.0,35.0,36.3,35.1,35.4,35.6,35.9,36.1,35.3,36.2,35.8,36.0,35.5],
+          "colors": [0,50,0,50,0,50,0,50,100,100,100,100,100,100,100,100],
+          "labels": ["Surface","Surface","Surface","Surface","Surface","Surface","Surface","Surface","50m","50m","50m","50m","50m","50m","50m","50m"],
+          "xlabel": "Temperature (°C)",
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "time_series",
+        "title": "Monthly Salinity Evolution",
+        "data": {
+          "series": [
+            {
+              "name": "Surface Salinity",
+              "dates": ["2023-03-15","2023-04-15","2023-05-15","2023-06-15","2023-07-15","2023-08-15"],
+              "values": [34.8,35.0,35.3,35.6,35.9,36.1]
+            },
+            {
+              "name": "100m Depth",
+              "dates": ["2023-03-15","2023-04-15","2023-05-15","2023-06-15","2023-07-15","2023-08-15"],
+              "values": [35.0,35.2,35.5,35.7,36.0,36.2]
+            }
+          ],
+          "ylabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "histogram",
+        "title": "Salinity Distribution",
+        "data": {
+          "values": [34.8,35.6,35.2,36.0,35.0,36.3,35.1,35.4,35.6,35.9,36.1,35.3,36.2,35.8,36.0,35.5,35.3,35.7,36.0,36.2,35.4,35.9,36.1,35.6,36.3,35.5,35.8,36.0,35.9,36.1],
+          "bins": 20,
+          "xlabel": "Salinity (PSU)"
+        }
+      },
+      {
+        "type": "box_plot",
+        "title": "Depth-wise Salinity Analysis",
+        "data": {
+          "series": [
+            {"name":"Surface (0m)","values":[34.9,35.6,35.2,36.0,35.0,36.3,35.1,35.4]},
+            {"name":"50m Depth","values":[35.6,35.9,36.1,35.3,36.2,35.8,36.0,35.5]},
+            {"name":"100m Depth","values":[35.8,36.0,36.2,35.5,36.3,35.7,36.1,35.9]},
+            {"name":"200m Depth","values":[36.0,36.3,36.4,35.7,36.5,35.9,36.2,36.0]}
+          ],
+          "ylabel":"Salinity (PSU)"
+        }
+      },
+      {
+        "type": "contour_plot",
+        "title": "Indian Ocean Salinity Contours",
+        "data": {
+          "x": [65,70,75,80,85],
+          "y": [-20,-10,0,10,20,30],
+          "z": [
+            [34.8,35.0,35.2,35.4,35.6],
+            [34.9,35.1,35.3,35.5,35.7],
+            [35.0,35.2,35.4,35.6,35.8],
+            [35.1,35.3,35.5,35.7,35.9],
+            [35.2,35.4,35.6,35.8,36.0],
+            [35.3,35.5,35.7,35.9,36.1]
+          ],
+          "xlabel":"Longitude (°E)",
+          "ylabel":"Latitude (°N)"
+        }
+      },
+      {
+        "type": "table",
+        "data": [
+          {"float_id":"5701201","lat":-15.1,"lon":70.2,"date":"2023-06-10","surface_salinity":34.9,"temperature":28.4},
+          {"float_id":"5702354","lat":7.3,"lon":78.6,"date":"2023-06-12","surface_salinity":35.6,"temperature":27.1},
+          {"float_id":"5703345","lat":-8.5,"lon":65.4,"date":"2023-06-15","surface_salinity":35.2,"temperature":29.0},
+          {"float_id":"5704987","lat":13.0,"lon":82.5,"date":"2023-06-18","surface_salinity":36.0,"temperature":26.5},
+          {"float_id":"5705123","lat":-3.6,"lon":68.1,"date":"2023-06-21","surface_salinity":35.0,"temperature":28.0},
+          {"float_id":"5706890","lat":9.8,"lon":80.3,"date":"2023-06-24","surface_salinity":36.3,"temperature":27.6}
+        ]
+      }
+    ]
+  }
+  

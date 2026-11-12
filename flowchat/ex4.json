@@ -1,0 +1,108 @@
+{
+  "visualizations": [
+    {
+      "type": "summary",
+      "data": {
+        "region": "South Atlantic (±25°)",
+        "time_range": "September 2024",
+        "num_floats": 6,
+        "avg_surface_salinity": 34.85,
+        "min_sal": 33.9,
+        "max_sal": 35.8
+      }
+    },
+    {
+      "type": "map",
+      "title": "ARGO Float Network",
+      "data": {
+        "latitudes": [-22.5, 5.9, -11.8, 18.2, -7.4, 14.7],
+        "longitudes": [-35.4, -28.1, -40.6, -25.3, -38.7, -30.2],
+        "values": [33.9, 34.7, 35.1, 35.8, 34.4, 35.3],
+        "ids": ["8801201","8802354","8803345","8804987","8805123","8806890"]
+      }
+    },
+    {
+      "type": "scatter_plot",
+      "title": "Temperature vs Salinity",
+      "data": {
+        "x": [27.8, 26.2, 28.6, 25.9, 27.1, 26.5, 24.3, 24.6, 23.8, 23.3, 22.9, 22.7, 23.4, 23.1, 23.2, 22.8],
+        "y": [33.9, 34.7, 35.1, 35.8, 34.4, 35.3, 34.2, 34.6, 34.8, 35.0, 35.2, 34.5, 35.4, 34.9, 35.1, 34.7],
+        "colors": [0,50,0,50,0,50,0,50,100,100,100,100,100,100,100,100],
+        "labels": ["Surface","Surface","Surface","Surface","Surface","Surface","Surface","Surface",
+                   "50m","50m","50m","50m","50m","50m","50m","50m"],
+        "xlabel": "Temperature (°C)",
+        "ylabel": "Salinity (PSU)"
+      }
+    },
+    {
+      "type": "time_series",
+      "title": "Monthly Salinity Evolution",
+      "data": {
+        "series": [
+          {
+            "name": "Surface Salinity",
+            "dates": ["2024-05-15","2024-06-15","2024-07-15","2024-08-15","2024-09-15","2024-10-15"],
+            "values": [34.1,34.5,34.7,35.0,35.3,35.5]
+          },
+          {
+            "name": "100m Depth",
+            "dates": ["2024-05-15","2024-06-15","2024-07-15","2024-08-15","2024-09-15","2024-10-15"],
+            "values": [34.5,34.8,35.0,35.2,35.5,35.7]
+          }
+        ],
+        "ylabel": "Salinity (PSU)"
+      }
+    },
+    {
+      "type": "histogram",
+      "title": "Salinity Distribution",
+      "data": {
+        "values": [33.9,34.7,35.1,35.8,34.4,35.3,34.2,34.6,34.8,35.0,35.2,34.5,35.4,34.9,35.1,34.7,34.3,34.8,35.0,35.3,34.6,35.2,35.5,34.9,35.6,35.1,35.3,35.0,35.2,34.8],
+        "bins": 20,
+        "xlabel": "Salinity (PSU)"
+      }
+    },
+    {
+      "type": "box_plot",
+      "title": "Depth-wise Salinity Analysis",
+      "data": {
+        "series": [
+          {"name":"Surface (0m)","values":[33.9,34.7,35.1,35.8,34.4,35.3,34.2,34.6]},
+          {"name":"50m Depth","values":[34.7,35.0,35.2,34.5,35.4,34.9,35.1,34.7]},
+          {"name":"100m Depth","values":[34.8,35.1,35.3,34.6,35.5,35.0,35.2,34.9]},
+          {"name":"200m Depth","values":[35.0,35.3,35.5,34.8,35.6,35.1,35.3,35.0]}
+        ],
+        "ylabel":"Salinity (PSU)"
+      }
+    },
+    {
+      "type": "contour_plot",
+      "title": "South Atlantic Salinity Contours",
+      "data": {
+        "x": [-40,-35,-30,-25,-20],
+        "y": [-25,-15,-5,5,15,25],
+        "z": [
+          [33.9,34.1,34.3,34.5,34.7],
+          [34.0,34.2,34.4,34.6,34.8],
+          [34.1,34.3,34.5,34.7,34.9],
+          [34.2,34.4,34.6,34.8,35.0],
+          [34.3,34.5,34.7,34.9,35.1],
+          [34.4,34.6,34.8,35.0,35.2]
+        ],
+        "xlabel":"Longitude (°E)",
+        "ylabel":"Latitude (°N)"
+      }
+    },
+    {
+      "type": "table",
+      "data": [
+        {"float_id":"8801201","lat":-22.5,"lon":-35.4,"date":"2024-09-05","surface_salinity":33.9,"temperature":27.8},
+        {"float_id":"8802354","lat":5.9,"lon":-28.1,"date":"2024-09-08","surface_salinity":34.7,"temperature":26.2},
+        {"float_id":"8803345","lat":-11.8,"lon":-40.6,"date":"2024-09-11","surface_salinity":35.1,"temperature":28.6},
+        {"float_id":"8804987","lat":18.2,"lon":-25.3,"date":"2024-09-14","surface_salinity":35.8,"temperature":25.9},
+        {"float_id":"8805123","lat":-7.4,"lon":-38.7,"date":"2024-09-17","surface_salinity":34.4,"temperature":27.1},
+        {"float_id":"8806890","lat":14.7,"lon":-30.2,"date":"2024-09-20","surface_salinity":35.3,"temperature":26.5}
+      ]
+    }
+  ]
+}
