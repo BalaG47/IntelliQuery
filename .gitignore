@@ -10,7 +10,7 @@
 
 # Allow these four project directories
 !/context/
-!/floatchat frontend/
+!/floatchart frontend/
 !/flowchat/
 !/visualisation pipeline/
 

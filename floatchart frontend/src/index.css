@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+@theme {
+  --font-heading: "Chivo", "Trebuchet MS", -apple-system, sans-serif;
+  --font-body: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+}
+
+:root {
+  /* ================= LIGHT MODE (Chart Vellum & Maritime Ink) ================= */
+  --bg-app: #F4F1EA;
+  --bg-surface-0: #FAF8F5;
+  --bg-surface-1: #EBE5DA;
+  --bg-surface-2: #DFD7C8;
+
+  --border-subtle: #DDD7CB;
+  --border-strong: #786C5A;
+
+  --text-primary: #141C24;
+  --text-secondary: #475569;
+  --text-muted: #4F5E6E;
+
+  /* Single UI Accent (Light): Admiralty Deep Teal */
+  --ui-accent: #0E5E6F;
+  --ui-accent-hover: #094754;
+  --ui-accent-surface: #E0EEF2;
+  --ui-accent-contrast: #FFFFFF;
+
+  /* Data-Series Colors (Separate from UI accent) */
+  --series-temp: #96320C;     /* Deep Deck Rust */
+  --series-sal: #186074;      /* Oceanic Sounding Teal */
+  --series-pres: #435266;     /* Bathymetric Slate */
+
+  /* Semantic Status Colors (All >= 4.5:1 on light surfaces) */
+  --state-success: #1A633B;
+  --state-warning: #7E4C00;
+  --state-error: #992224;
+
+  /* Focus ring (>= 3.0:1 on all surfaces) */
+  --focus-ring: #0E5E6F;
+
+  /* Visualizations & Chart.js tokens */
+  --chart-grid: #DDD7CB;
+  --chart-text: #141C24;
+  --chart-line: #96320C;
+}
+
+.dark {
+  /* ================= DARK MODE (Abyssal Sounding & Verdigris) ================= */
+  --bg-app: #0B1218;
+  --bg-surface-0: #111A22;
+  --bg-surface-1: #17232E;
+  --bg-surface-2: #1F2E3D;
+
+  --border-subtle: #223344;
+  --border-strong: #60809E;
+
+  --text-primary: #E5EDF5;
+  --text-secondary: #9AB0C4;
+  --text-muted: #8BA2B6;
+
+  /* Single UI Accent (Dark): Verdigris / Marine Sea-Glass */
+  --ui-accent: #48C9A6;
+  --ui-accent-hover: #5CE0BD;
+  --ui-accent-surface: #0E2B25;
+  --ui-accent-contrast: #071A15;
+
+  /* Data-Series Colors (Separate from UI accent) */
+  --series-temp: #E58532;     /* Marine Buoy Amber-Rust */
+  --series-sal: #3BA7C9;      /* Surface Sounding Cobalt-Teal */
+  --series-pres: #8E9EAF;     /* Instrument Slate */
+
+  /* Semantic Status Colors (Custom, non-Tailwind-default, >= 4.5:1 on dark surfaces) */
+  --state-success: #38D39F;   /* Marine bio-phosphor */
+  --state-warning: #E0A028;   /* Sea-lantern amber */
+  --state-error: #F46868;     /* Maritime coral */
+
+  /* Focus ring (>= 3.0:1 on all surfaces) */
+  --focus-ring: #48C9A6;
+
+  /* Visualizations & Chart.js tokens */
+  --chart-grid: #223344;
+  --chart-text: #E5EDF5;
+  --chart-line: #E58532;
+}
+
+/* =========================================================================
+   DOCUMENTED LEAFLET TILE TOKENS (For Phase 5 Map integration):
+   - Light Basemap Tile: https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png
+   - Dark Basemap Tile:  https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png
+   ========================================================================= */
+
+/* Global body resets adhering to Hydrographic Bench */
+body {
+  font-family: var(--font-body);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+}
+
+code, kbd, samp, pre {
+  font-family: var(--font-mono);
+}
+
+/* Accessible reduced-motion override */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
