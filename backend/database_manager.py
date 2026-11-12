@@ -155,13 +155,15 @@ class DatabaseManager:
     ):
         """
         Retrieves a float ID from MySQL or creates a new float.
+        If the float exists but has missing metadata (NULL, empty, or 'N/A'),
+        updates the missing metadata with incoming valid values.
         """
 
         with self.mysql_engine.connect() as conn:
 
             result = conn.execute(
                 text("""
-                    SELECT float_id
+                    SELECT float_id, project_name, platform_type
                     FROM argo_floats
                     WHERE wmo_number = :wmo
                 """),
@@ -171,7 +173,38 @@ class DatabaseManager:
             ).fetchone()
 
             if result:
-                return result[0]
+                float_id = result[0]
+                existing_proj = result[1]
+                existing_plat = result[2]
+
+                update_fields = {}
+                # Determine if project_name needs update (existing is NULL, empty, or 'N/A')
+                is_proj_missing = existing_proj is None or str(existing_proj).strip() in ("", "N/A")
+                is_new_proj_valid = project_name is not None and str(project_name).strip() not in ("", "N/A")
+                if is_proj_missing and is_new_proj_valid:
+                    update_fields["project_name"] = str(project_name).strip()
+
+                # Determine if platform_type needs update (existing is NULL, empty, or 'N/A')
+                is_plat_missing = existing_plat is None or str(existing_plat).strip() in ("", "N/A")
+                is_new_plat_valid = platform_type is not None and str(platform_type).strip() not in ("", "N/A")
+                if is_plat_missing and is_new_plat_valid:
+                    update_fields["platform_type"] = str(platform_type).strip()
+
+                if update_fields:
+                    set_clauses = []
+                    params = {"fid": float_id}
+                    if "project_name" in update_fields:
+                        set_clauses.append("project_name = :new_proj")
+                        params["new_proj"] = update_fields["project_name"]
+                    if "platform_type" in update_fields:
+                        set_clauses.append("platform_type = :new_plat")
+                        params["new_plat"] = update_fields["platform_type"]
+
+                    update_sql = f"UPDATE argo_floats SET {', '.join(set_clauses)} WHERE float_id = :fid"
+                    conn.execute(text(update_sql), params)
+                    conn.commit()
+
+                return float_id
 
             insert_sql = text("""
                 INSERT INTO argo_floats

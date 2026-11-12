@@ -86,6 +86,7 @@
 # Logs, temporary files, OS/editor metadata
 **/*.log
 **/logs/
+**/reports/
 **/tmp/
 **/temp/
 **/.DS_Store

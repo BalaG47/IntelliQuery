@@ -11,6 +11,86 @@ from config import ARGO_DATA_DIR
 from database_manager import DatabaseManager
 
 
+def extract_netcdf_metadata_string(dataset, var_name, profile_idx=0, default="N/A"):
+    """
+    Extracts and decodes metadata string from NetCDF dataset variables (primary)
+    or global attributes (fallback).
+
+    Requirements:
+    - Primary source: dataset.variables (case-insensitive lookup)
+    - Supports bytes, numpy byte strings, fixed-width character arrays/matrices
+    - Decodes UTF-8 and strips trailing spaces, null characters (\\x00), tabs, newlines
+    - Supports profile-level indexing through N_PROF (profile_idx)
+    - Retains global attribute fallback for non-standard files
+    - Returns default ('N/A') when valid metadata cannot be extracted
+    """
+    # 1. Primary: NetCDF Variables
+    for candidate in (var_name, var_name.upper(), var_name.lower()):
+        if candidate in dataset.variables:
+            var = dataset[candidate]
+            raw = var.values
+            if raw is None:
+                continue
+
+            val = raw
+            if hasattr(raw, "ndim") and raw.ndim > 0:
+                if profile_idx < len(raw):
+                    val = raw[profile_idx]
+                else:
+                    val = raw[0]
+
+            # Case 1: 1D array of characters/bytes (e.g. character matrix row)
+            if isinstance(val, np.ndarray) and val.ndim == 1:
+                try:
+                    if val.dtype.kind in ("S", "a"):
+                        byte_str = b"".join(val.tolist())
+                        cleaned = byte_str.decode("utf-8", errors="replace").strip("\x00 \t\r\n")
+                    else:
+                        str_val = "".join(str(c) for c in val.tolist())
+                        cleaned = str_val.strip("\x00 \t\r\n")
+                    if cleaned:
+                        return cleaned
+                except Exception:
+                    pass
+
+            # Case 2: Byte scalar or NumPy byte string
+            elif isinstance(val, (bytes, np.bytes_)):
+                try:
+                    cleaned = val.decode("utf-8", errors="replace").strip("\x00 \t\r\n")
+                    if cleaned:
+                        return cleaned
+                except Exception:
+                    pass
+
+            # Case 3: 0-dimensional NumPy array or scalar string
+            else:
+                if hasattr(val, "item") and not isinstance(val, (str, bytes)):
+                    try:
+                        val = val.item()
+                    except Exception:
+                        pass
+                if isinstance(val, (bytes, np.bytes_)):
+                    cleaned = val.decode("utf-8", errors="replace").strip("\x00 \t\r\n")
+                else:
+                    cleaned = str(val).strip("\x00 \t\r\n")
+                if cleaned and cleaned != "None":
+                    return cleaned
+
+    # 2. Fallback: Global attributes
+    for candidate in (var_name, var_name.lower(), var_name.upper()):
+        if candidate in dataset.attrs:
+            attr_val = dataset.attrs[candidate]
+            if attr_val is not None:
+                if isinstance(attr_val, (bytes, np.bytes_)):
+                    cleaned = attr_val.decode("utf-8", errors="replace").strip("\x00 \t\r\n")
+                else:
+                    cleaned = str(attr_val).strip("\x00 \t\r\n")
+                if cleaned and cleaned != "None":
+                    return cleaned
+
+    return default
+
+
 class ArgoDataProcessor:
     """Ingest ARGO NetCDF files into MySQL and ChromaDB together."""
 
@@ -57,10 +137,12 @@ class ArgoDataProcessor:
                     if isinstance(raw_wmo, bytes)
                     else str(raw_wmo).strip()
                 )
+                project_name = extract_netcdf_metadata_string(dataset, "PROJECT_NAME", default="N/A")
+                platform_type = extract_netcdf_metadata_string(dataset, "PLATFORM_TYPE", default="N/A")
                 float_id_db = self.db_manager.get_or_create_float(
                     wmo_number,
-                    dataset.attrs.get("project_name", "N/A"),
-                    dataset.attrs.get("platform_type", "N/A"),
+                    project_name,
+                    platform_type,
                 )
 
                 for index in range(dataset.sizes["N_PROF"]):
