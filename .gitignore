@@ -10,8 +10,8 @@
 
 # Allow these four project directories
 !/context/
-!/floatchart frontend/
-!/flowchat/
+!/frontend/
+!/backend/
 !/visualisation pipeline/
 
 # Floatchat monorepo-level ignores

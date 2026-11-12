@@ -6,7 +6,7 @@ export const ThemeProvider = ({ children }) => {
   const [theme, setThemeState] = useState(() => {
     // 1. Check local storage
     try {
-      const stored = localStorage.getItem("floatchat-theme");
+      const stored = localStorage.getItem("intelliquery-theme");
       if (stored === "light" || stored === "dark") {
         return stored;
       }
@@ -42,7 +42,7 @@ export const ThemeProvider = ({ children }) => {
 
     const handleChange = (e) => {
       try {
-        const stored = localStorage.getItem("floatchat-theme");
+        const stored = localStorage.getItem("intelliquery-theme");
         if (!stored) {
           // No manual override, follow system
           const newSystemTheme = e.matches ? "dark" : "light";
@@ -60,7 +60,7 @@ export const ThemeProvider = ({ children }) => {
   const setTheme = (newTheme) => {
     setThemeState(newTheme);
     try {
-      localStorage.setItem("floatchat-theme", newTheme);
+      localStorage.setItem("intelliquery-theme", newTheme);
     } catch (e) {}
   };
 

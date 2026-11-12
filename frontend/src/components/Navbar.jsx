@@ -26,8 +26,8 @@ export default function Navbar() {
       {/* Brand logo & instrument badge */}
       <div className="flex items-center gap-3">
         <NavLink to="/" className="flex items-baseline gap-1.5 font-bold tracking-tight text-lg text-[#141C24] dark:text-[#E5EDF5]">
-          <span>FLOAT</span>
-          <span className="text-[#0E5E6F] dark:text-[#48C9A6]">CHAT</span>
+          <span>INTELLI</span>
+          <span className="text-[#0E5E6F] dark:text-[#48C9A6]">QUERY</span>
           <span className="hidden md:inline ml-2 text-[10px] font-mono font-normal uppercase tracking-widest text-[#4F5E6E] dark:text-[#8BA2B6] border-l border-[#DDD7CB] dark:border-[#223344] pl-2">
             ARGO Survey
           </span>

@@ -33,11 +33,11 @@ const Sidebar = () => {
             to="/"
             className="flex items-baseline gap-1.5 font-bold tracking-tight text-xl text-[#141C24] dark:text-[#E5EDF5]"
           >
-            <span>FLOAT</span>
-            <span className="text-[#0E5E6F] dark:text-[#48C9A6]">CHAT</span>
+            <span>INTELLI</span>
+            <span className="text-[#0E5E6F] dark:text-[#48C9A6]">QUERY</span>
           </NavLink>
           <p className="text-[10px] font-mono uppercase tracking-widest text-[#4F5E6E] dark:text-[#8BA2B6] mt-0.5">
-            ARGO Ocean Console
+            ARGO Ocean Console — IntelliQuery
           </p>
         </div>
 

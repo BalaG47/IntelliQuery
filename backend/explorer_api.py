@@ -1,7 +1,7 @@
-"""Data Explorer REST API Blueprint for FloatChat.
+"""Data Explorer REST API Blueprint for IntelliQuery.
 
 Provides endpoints for exploring ARGO floats, profiles, spatial map coordinates,
-and streaming data exports. All endpoints adhere to FloatChat constraints:
+and streaming data exports. All endpoints adhere to IntelliQuery constraints:
 - Parameterized SQL only (no SQL injection risk).
 - Server-side pagination with bounded page sizes.
 - No heavy JSON measurement arrays loaded in list queries.
@@ -346,7 +346,7 @@ def create_explorer_blueprint(db_manager):
 
             if fmt == "csv":
                 def generate_csv():
-                    yield "# FloatChat ARGO Ocean Data Export\n"
+                    yield "# IntelliQuery ARGO Ocean Data Export\n"
                     yield "# Data Version: 1.0 (Raw, unadjusted, no QC flags)\n"
                     yield "# Notes: Missing/fill values are represented as blank\n"
 
@@ -387,7 +387,7 @@ def create_explorer_blueprint(db_manager):
                                     lvl_str = str(row[6]) if row[6] is not None else ""
                                     yield f"{row[0]},{row[1]},{row[2]},{time_str},{lat_str},{lon_str},{lvl_str}\n"
 
-                filename = "floatchat_argo_measurements.csv" if content == "measurements" else "floatchat_argo_profiles.csv"
+                filename = "intelliquery_argo_measurements.csv" if content == "measurements" else "intelliquery_argo_profiles.csv"
                 return Response(
                     stream_with_context(generate_csv()),
                     mimetype="text/csv",
@@ -434,7 +434,7 @@ def create_explorer_blueprint(db_manager):
                 return Response(
                     stream_with_context(generate_json()),
                     mimetype="application/json",
-                    headers={"Content-Disposition": "attachment; filename=floatchat_argo_profiles.json"}
+                    headers={"Content-Disposition": "attachment; filename=intelliquery_argo_profiles.json"}
                 )
 
         except ValueError as ve:

@@ -85,7 +85,7 @@ const ChatWindow = ({ onFirstMessage }) => {
 
       {/* Header */}
       <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gradient-to-r from-blue-600 to-cyan-500">
-        <h2 className="text-xl font-bold drop-shadow-md">🌊 Floatchat AI Chat</h2>
+        <h2 className="text-xl font-bold drop-shadow-md">🌊 IntelliQuery AI Chat</h2>
         <span className="text-gray-200 text-sm">Connected</span>
       </div>
 
@@ -102,7 +102,7 @@ const ChatWindow = ({ onFirstMessage }) => {
                 <div className="w-10 h-10 rounded-full bg-cyan-500 flex items-center justify-center text-white font-bold">
                   AI
                 </div>
-                <span className="text-xs text-gray-400 mt-1" style={{ marginTop: "6px" }}>Floatchat</span>
+                <span className="text-xs text-gray-400 mt-1" style={{ marginTop: "6px" }}>IntelliQuery</span>
               </div>
             )}
             {msg.sender === "user" && (
@@ -168,7 +168,7 @@ const ChatWindow = ({ onFirstMessage }) => {
           </div>
         ))}
         {loading && (
-          <div className="text-gray-400 text-sm italic animate-pulse">Floatchat is thinking...</div>
+          <div className="text-gray-400 text-sm italic animate-pulse">IntelliQuery is thinking...</div>
         )}
         <div ref={messagesEndRef} />
       </div>
