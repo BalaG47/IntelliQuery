@@ -1,5 +1,42 @@
 import React from "react";
-import { FiGlobe, FiDatabase, FiLayers, FiBriefcase } from "react-icons/fi";
+import { FiGlobe, FiDatabase, FiCalendar, FiMapPin } from "react-icons/fi";
+
+/** Normalise an ISO timestamp to YYYY-MM-DD without timezone drift. */
+const formatDate = (value) => {
+  if (typeof value !== "string" || value.trim() === "") return null;
+
+  // Prefer the leading calendar date so local/UTC offset never shifts the day.
+  const iso = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+};
+
+/** Coerce a coordinate to a finite number, treating null/blank as absent. */
+const toNumber = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
+/** Format a latitude as e.g. 20.68°N / 44.13°S. */
+const formatLatitude = (value) => {
+  const num = toNumber(value);
+  if (num === null) return null;
+  return `${Math.abs(num).toFixed(2)}°${num >= 0 ? "N" : "S"}`;
+};
+
+/** Format a longitude as e.g. 94.02°E / 39.72°W. */
+const formatLongitude = (value) => {
+  const num = toNumber(value);
+  if (num === null) return null;
+  return `${Math.abs(num).toFixed(2)}°${num >= 0 ? "E" : "W"}`;
+};
+
+const MISSING = "—";
+const NOT_RECORDED = "Not recorded";
 
 const SummaryCards = ({ overview, loading }) => {
   if (loading && !overview) {
@@ -17,17 +54,15 @@ const SummaryCards = ({ overview, loading }) => {
 
   if (!overview) return null;
 
-  // Count active parameters
-  const activeParams = ["pressure", "temperature", "salinity", "bgc"].filter(
-    (key) => overview.parameters && overview.parameters[key] === true
-  ).length;
+  const dateStart = formatDate(overview.date_range?.min);
+  const dateEnd = formatDate(overview.date_range?.max);
+  const hasDateRange = Boolean(dateStart || dateEnd);
 
-  // Filter out 'N/A', 'Unknown', or empty project names to only count real values
-  const validProjects = (overview.projects?.values || []).filter(
-    (v) => v && typeof v === "string" && v !== "N/A" && v !== "Unknown" && v.trim() !== ""
-  );
-  const projectsCount = validProjects.length;
-  const projectsDisplay = projectsCount > 0 ? `${projectsCount} Recorded` : "Not recorded";
+  const latMin = formatLatitude(overview.geo_bounds?.min_latitude);
+  const latMax = formatLatitude(overview.geo_bounds?.max_latitude);
+  const lonMin = formatLongitude(overview.geo_bounds?.min_longitude);
+  const lonMax = formatLongitude(overview.geo_bounds?.max_longitude);
+  const hasGeoBounds = Boolean(latMin || latMax || lonMin || lonMax);
 
   const cards = [
     {
@@ -43,16 +78,23 @@ const SummaryCards = ({ overview, loading }) => {
       subtext: "Depth cycles recorded",
     },
     {
-      title: "Active Parameters",
-      value: activeParams,
-      icon: <FiLayers className="text-accent text-lg" />,
-      subtext: "PRES, TEMP, PSAL (BGC: None)",
+      title: "Date Range",
+      lines: hasDateRange
+        ? [`${dateStart ?? MISSING}`, `→ ${dateEnd ?? MISSING}`]
+        : [NOT_RECORDED],
+      icon: <FiCalendar className="text-accent text-lg" />,
+      subtext: hasDateRange ? "Earliest → latest observation" : "Observation dates unavailable",
     },
     {
-      title: "Projects",
-      value: projectsDisplay,
-      icon: <FiBriefcase className="text-accent text-lg" />,
-      subtext: projectsCount > 0 ? "Project names recorded" : "NetCDF metadata unavailable",
+      title: "Geographic Extents",
+      lines: hasGeoBounds
+        ? [
+            `${latMin ?? MISSING} – ${latMax ?? MISSING}`,
+            `${lonMin ?? MISSING} – ${lonMax ?? MISSING}`,
+          ]
+        : [NOT_RECORDED],
+      icon: <FiMapPin className="text-accent text-lg" />,
+      subtext: hasGeoBounds ? "Bounding box of observations" : "Coordinates unavailable",
     },
   ];
 
@@ -63,11 +105,30 @@ const SummaryCards = ({ overview, loading }) => {
           key={idx}
           className="bg-surface-0 border border-subtle rounded-[3px] p-4 flex items-center justify-between"
         >
-          <div>
+          <div className="min-w-0">
             <p className="text-[11px] uppercase tracking-wider text-muted font-mono font-medium mb-1">
               {card.title}
             </p>
-            <p className="text-2xl font-bold text-primary font-heading tracking-tight">{card.value}</p>
+            {card.lines ? (
+              <div className="font-heading font-bold tracking-tight tabular-nums leading-tight">
+                {card.lines.map((line, lineIdx) => (
+                  <p
+                    key={lineIdx}
+                    className={
+                      lineIdx === 0
+                        ? "text-base text-primary whitespace-nowrap"
+                        : "text-sm text-secondary font-mono whitespace-nowrap"
+                    }
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-2xl font-bold text-primary font-heading tracking-tight">
+                {card.value}
+              </p>
+            )}
             <p className="text-xs text-secondary mt-1">{card.subtext}</p>
           </div>
           <div className="w-10 h-10 rounded-[3px] bg-surface-1 border border-subtle flex items-center justify-center shrink-0">
