@@ -166,18 +166,50 @@ def extract_qc_array(dataset, var_name, profile_idx=0):
     return res
 
 
+def _profile_scalar_value(raw, profile_idx=0):
+    """
+    Selects a single value from either a profile-dimensioned array or a
+    scalar (0-D) array.
+
+    ``xarray`` drops the ``N_PROF`` dimension when a dataset is subset with
+    ``isel(N_PROF=i)``, so profile-level character variables such as
+    ``DATA_MODE`` and ``PROFILE_PRES_QC`` arrive here as 0-D arrays.
+    Calling ``len()`` on those raises ``TypeError: len() of unsized object``,
+    which previously aborted ingestion for every profile.
+
+    An index that is negative or beyond the available profiles yields None.
+    Another profile's value is never substituted for a missing one.
+    """
+    if raw is None:
+        return None
+
+    arr = np.asarray(raw)
+
+    if arr.ndim == 0:
+        return arr.item()
+
+    if arr.size == 0:
+        return None
+
+    if 0 <= profile_idx < arr.shape[0]:
+        return arr[profile_idx]
+
+    return None
+
+
 def extract_profile_qc(dataset, var_name, profile_idx=0):
     """
     Extracts profile-level QC flag.
     Valid domain: ADMT letters 'A'-'F' (or None).
+    Accepts both profile-dimensioned arrays and the 0-D scalars produced by
+    ``isel(N_PROF=...)``.
     """
     if var_name not in dataset.variables:
         return None
-    val = dataset[var_name].values
-    if val is None or len(val) == 0:
-        return None
-    item = val[profile_idx] if hasattr(val, "__len__") and profile_idx < len(val) else val
+
+    item = _profile_scalar_value(dataset[var_name].values, profile_idx)
     s = clean_metadata_str(item)
+
     if s and s.upper() in {"A", "B", "C", "D", "E", "F"}:
         return s.upper()
     return None
@@ -186,14 +218,15 @@ def extract_profile_qc(dataset, var_name, profile_idx=0):
 def extract_data_mode(dataset, profile_idx=0):
     """
     Extracts single-character processing DATA_MODE ('D', 'R', 'A') or None.
+    Accepts both profile-dimensioned arrays and the 0-D scalars produced by
+    ``isel(N_PROF=...)``.
     """
     if "DATA_MODE" not in dataset.variables:
         return None
-    val = dataset["DATA_MODE"].values
-    if val is None or len(val) == 0:
-        return None
-    item = val[profile_idx] if hasattr(val, "__len__") and profile_idx < len(val) else val
+
+    item = _profile_scalar_value(dataset["DATA_MODE"].values, profile_idx)
     s = clean_metadata_str(item)
+
     return s[0].upper() if s else None
 
 
