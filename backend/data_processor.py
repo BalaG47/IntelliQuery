@@ -275,26 +275,108 @@ def extract_scientific_calib(dataset, profile_idx=0):
     return calibs if calibs else None
 
 
-def extract_bgc_data(dataset, profile_idx=0):
+def _profile_row(values, profile_idx=0):
+    """
+    Returns the row belonging to one profile.
+
+    Callers either pass a full dataset (N_PROF, ...) or a dataset already subset
+    with ``isel(N_PROF=...)``, where the N_PROF axis is gone. For a 1-D array the
+    remaining axis is the per-profile axis (N_PARAM / N_LEVELS), because the
+    profile has already been selected by the caller.
+    """
+    array = np.asarray(values)
+
+    if array.ndim <= 1:
+        return array
+
+    if 0 <= profile_idx < array.shape[0]:
+        return array[profile_idx]
+
+    return array[0]
+
+
+def _station_parameter_names(dataset, profile_idx=0):
+    """Parameter names for one profile, tolerating an already-subset dataset."""
+    if "STATION_PARAMETERS" not in dataset.variables:
+        return []
+
+    row = _profile_row(dataset["STATION_PARAMETERS"].values, profile_idx)
+
+    names = []
+    for item in np.atleast_1d(row):
+        name = clean_metadata_str(item)
+        if name:
+            names.append(name.upper())
+    return names
+
+
+def _parameter_data_modes(dataset, profile_idx=0):
+    """
+    Maps parameter name -> PARAMETER_DATA_MODE flag for one profile.
+
+    The mode is read from PARAMETER_DATA_MODE only. It is never derived from the
+    profile-level DATA_MODE, and unresolved metadata is left out rather than
+    guessed.
+    """
+    if "PARAMETER_DATA_MODE" not in dataset.variables:
+        return {}
+
+    names = _station_parameter_names(dataset, profile_idx)
+    if not names:
+        return {}
+
+    modes = np.atleast_1d(
+        _profile_row(dataset["PARAMETER_DATA_MODE"].values, profile_idx)
+    )
+
+    # Positional association is only trustworthy when both axes describe the
+    # same parameters; otherwise the metadata stays unresolved.
+    if len(modes) != len(names):
+        return {}
+
+    result = {}
+    for name, raw_mode in zip(names, modes):
+        mode = clean_metadata_str(raw_mode)
+        if name and mode:
+            result[name] = mode.upper()
+    return result
+
+
+def extract_bgc_data(dataset, profile_idx=0, metadata_dataset=None,
+                     metadata_profile_idx=None):
     """
     Dynamically extracts bio-geochemical measurements, quality flags, adjusted values,
     and parameter data modes where available.
+
+    Parameter-level modes are extracted independently of the BGC measurements, so a
+    dataset without BGC arrays still yields its PARAMETER_DATA_MODE metadata.
+
+    ``metadata_dataset`` optionally supplies the full multi-profile dataset for
+    metadata alignment; ``_process_single_profile`` passes it because ``dataset``
+    has already been subset with ``isel(N_PROF=...)``.
     """
     core_params = {"PRES", "TEMP", "PSAL"}
     known_bgc = ["DOXY", "CHLA", "BBP700", "NITRATE", "PH_IN_SITU_TOTAL"]
+
+    metadata_source = metadata_dataset if metadata_dataset is not None else dataset
+    metadata_index = (
+        metadata_profile_idx if metadata_profile_idx is not None else profile_idx
+    )
+    param_data_mode = _parameter_data_modes(metadata_source, metadata_index)
+
     discovered = [p for p in known_bgc if p in dataset.variables]
 
-    if "STATION_PARAMETERS" in dataset.variables:
-        raw_sp = dataset["STATION_PARAMETERS"].values
-        row_sp = raw_sp[profile_idx] if profile_idx < len(raw_sp) else raw_sp[0]
-        for item in row_sp:
-            name = item.decode().strip() if isinstance(item, bytes) else str(item).strip()
-            if name and name not in core_params and name not in discovered:
-                if name in dataset.variables:
-                    discovered.append(name)
+    for name in _station_parameter_names(dataset, profile_idx):
+        if name in core_params or name in discovered:
+            continue
+        if name in dataset.variables:
+            discovered.append(name)
 
     if not discovered:
-        return None, None, None, None, None, None
+        return (
+            None, None, None, None, None,
+            param_data_mode if param_data_mode else None,
+        )
 
     bgc_params = {}
     bgc_qc = {}
@@ -310,20 +392,6 @@ def extract_bgc_data(dataset, profile_idx=0):
             bgc_adj[var] = extract_measurement_array(dataset, f"{var}_ADJUSTED", profile_idx)
             bgc_adj_err[var] = extract_measurement_array(dataset, f"{var}_ADJUSTED_ERROR", profile_idx)
             bgc_adj_qc[var] = extract_qc_array(dataset, f"{var}_ADJUSTED_QC", profile_idx)
-
-    param_data_mode = {}
-    if "PARAMETER_DATA_MODE" in dataset.variables:
-        pdm_vals = dataset["PARAMETER_DATA_MODE"].values
-        row = pdm_vals[profile_idx] if profile_idx < len(pdm_vals) else pdm_vals[0]
-        if "STATION_PARAMETERS" in dataset.variables:
-            raw_sp = dataset["STATION_PARAMETERS"].values
-            row_sp = raw_sp[profile_idx] if profile_idx < len(raw_sp) else raw_sp[0]
-            for i, p_name in enumerate(row_sp):
-                p_str = p_name.decode().strip() if isinstance(p_name, bytes) else str(p_name).strip()
-                if i < len(row):
-                    m_char = row[i].decode().strip() if isinstance(row[i], bytes) else str(row[i]).strip()
-                    if p_str and m_char:
-                        param_data_mode[p_str] = m_char
 
     return (
         bgc_params if bgc_params else None,
@@ -497,7 +565,11 @@ class ArgoDataProcessor:
             bgc_adjusted_error,
             bgc_adjusted_qc,
             parameter_data_mode,
-        ) = extract_bgc_data(profile_ds)
+        ) = extract_bgc_data(
+            profile_ds,
+            profile_index,
+            metadata_dataset=full_dataset,
+        )
 
         # 5. Provenance Metadata
         source_file = os.path.basename(nc_file_path) if nc_file_path else None
