@@ -1,9 +1,96 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-heading: "Chivo", "Trebuchet MS", -apple-system, sans-serif;
   --font-body: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+
+  --color-app: var(--bg-app);
+  --color-surface-0: var(--bg-surface-0);
+  --color-surface-1: var(--bg-surface-1);
+  --color-surface-2: var(--bg-surface-2);
+
+  --color-subtle: var(--border-subtle);
+  --color-strong: var(--border-strong);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+
+  --color-accent: var(--ui-accent);
+  --color-accent-hover: var(--ui-accent-hover);
+  --color-accent-surface: var(--ui-accent-surface);
+  --color-accent-contrast: var(--ui-accent-contrast);
+
+  --color-series-temp: var(--series-temp);
+  --color-series-sal: var(--series-sal);
+  --color-series-pres: var(--series-pres);
+
+  --color-state-success: var(--state-success);
+  --color-state-warning: var(--state-warning);
+  --color-state-error: var(--state-error);
+
+  --color-focus-ring: var(--focus-ring);
+}
+
+@utility border-subtle {
+  border-color: var(--border-subtle);
+}
+
+@utility border-strong {
+  border-color: var(--border-strong);
+}
+
+@utility border-accent {
+  border-color: var(--ui-accent);
+}
+
+@utility bg-surface-0 {
+  background-color: var(--bg-surface-0);
+}
+
+@utility bg-surface-1 {
+  background-color: var(--bg-surface-1);
+}
+
+@utility bg-surface-2 {
+  background-color: var(--bg-surface-2);
+}
+
+@utility bg-app {
+  background-color: var(--bg-app);
+}
+
+@utility bg-accent-surface {
+  background-color: var(--ui-accent-surface);
+}
+
+@utility text-primary {
+  color: var(--text-primary);
+}
+
+@utility text-secondary {
+  color: var(--text-secondary);
+}
+
+@utility text-muted {
+  color: var(--text-muted);
+}
+
+@utility text-accent {
+  color: var(--ui-accent);
+}
+
+@utility text-accent-contrast {
+  color: var(--ui-accent-contrast);
+}
+
+@utility ring-focus-ring {
+  --tw-ring-color: var(--focus-ring);
 }
 
 :root {

@@ -8,6 +8,7 @@ import {
   FiChevronDown,
   FiChevronRight,
   FiInfo,
+  FiMenu,
 } from "react-icons/fi";
 import ThemeToggle from "./ThemeToggle";
 
@@ -17,18 +18,27 @@ export default function Navbar() {
   const navLinkClass = ({ isActive }) =>
     `flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-[3px] transition-colors duration-100 ${
       isActive
-        ? "text-[#0E5E6F] dark:text-[#48C9A6] bg-[#EBE5DA] dark:bg-[#17232E] font-semibold border-b sm:border-b-2 border-[#0E5E6F] dark:border-[#48C9A6]"
-        : "text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA]/60 dark:hover:bg-[#17232E]/60"
+        ? "text-accent bg-surface-1 font-semibold border-b sm:border-b-2 border-accent"
+        : "text-secondary hover:text-primary hover:bg-surface-1/60"
     }`;
 
   return (
-    <header className="fixed top-0 left-0 w-full z-50 bg-[#FAF8F5] dark:bg-[#111A22] text-[#141C24] dark:text-[#E5EDF5] border-b border-[#DDD7CB] dark:border-[#223344] flex items-center justify-between h-14 px-4 sm:px-6">
-      {/* Brand logo & instrument badge */}
-      <div className="flex items-center gap-3">
-        <NavLink to="/" className="flex items-baseline gap-1.5 font-bold tracking-tight text-lg text-[#141C24] dark:text-[#E5EDF5]">
+    <header className="fixed top-0 left-0 w-full z-50 bg-surface-0 text-primary border-b border-subtle flex items-center justify-between h-14 px-4 sm:px-6">
+      {/* Brand logo & instrument badge & mobile menu toggle */}
+      <div className="flex items-center gap-2.5 sm:gap-3">
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent("toggle-sidebar"))}
+          className="lg:hidden p-1.5 rounded-[3px] border border-subtle text-secondary hover:text-primary hover:bg-surface-1 transition-colors"
+          aria-label="Toggle Navigation Sidebar"
+        >
+          <FiMenu className="text-base" />
+        </button>
+
+        <NavLink to="/" className="flex items-baseline gap-1.5 font-bold tracking-tight text-lg text-primary">
           <span>INTELLI</span>
-          <span className="text-[#0E5E6F] dark:text-[#48C9A6]">QUERY</span>
-          <span className="hidden md:inline ml-2 text-[10px] font-mono font-normal uppercase tracking-widest text-[#4F5E6E] dark:text-[#8BA2B6] border-l border-[#DDD7CB] dark:border-[#223344] pl-2">
+          <span className="text-accent">QUERY</span>
+          <span className="hidden md:inline ml-2 text-[10px] font-mono font-normal uppercase tracking-widest text-muted border-l border-subtle pl-2">
             ARGO Survey
           </span>
         </NavLink>
@@ -56,7 +66,7 @@ export default function Navbar() {
           <button
             type="button"
             onClick={() => setOpenMenu(!openMenu)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[3px] text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA]/60 dark:hover:bg-[#17232E]/60 transition-colors duration-100 cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-[3px] text-secondary hover:text-primary hover:bg-surface-1/60 transition-colors duration-100 cursor-pointer"
           >
             <FiBarChart2 className="text-sm shrink-0" />
             <span>Visualizations</span>
@@ -65,27 +75,27 @@ export default function Navbar() {
 
           {openMenu && (
             <div
-              className="absolute left-0 top-full mt-1.5 w-48 bg-[#FAF8F5] dark:bg-[#111A22] border border-[#DDD7CB] dark:border-[#223344] shadow-md rounded-[3px] py-1.5 z-50 text-xs font-medium"
+              className="absolute left-0 top-full mt-1.5 w-48 bg-surface-0 border border-subtle shadow-md rounded-[3px] py-1.5 z-50 text-xs font-medium"
               onMouseLeave={() => setOpenMenu(false)}
             >
               <NavLink
                 to="/visualizations/globe"
                 onClick={() => setOpenMenu(false)}
-                className="block px-3 py-1.5 text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA] dark:hover:bg-[#17232E]"
+                className="block px-3 py-1.5 text-secondary hover:text-primary hover:bg-surface-1"
               >
                 3D Globe Overlays
               </NavLink>
               <NavLink
                 to="/visualizations/charts"
                 onClick={() => setOpenMenu(false)}
-                className="block px-3 py-1.5 text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA] dark:hover:bg-[#17232E]"
+                className="block px-3 py-1.5 text-secondary hover:text-primary hover:bg-surface-1"
               >
                 Charts
               </NavLink>
               <NavLink
                 to="/visualizations/flows"
                 onClick={() => setOpenMenu(false)}
-                className="block px-3 py-1.5 text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA] dark:hover:bg-[#17232E]"
+                className="block px-3 py-1.5 text-secondary hover:text-primary hover:bg-surface-1"
               >
                 Data Flows
               </NavLink>

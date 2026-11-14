@@ -268,37 +268,46 @@ class DatabaseManager:
     # INSERT PROFILE
     # ---------------------------------------------------------
 
+    def _get_profile_table_columns(self):
+        if not hasattr(self, "_cached_profile_cols") or self._cached_profile_cols is None:
+            try:
+                with self.mysql_engine.connect() as conn:
+                    rows = conn.execute(text("SHOW COLUMNS FROM argo_profiles")).fetchall()
+                    self._cached_profile_cols = {row[0] for row in rows}
+            except Exception as e:
+                logging.warning(f"Could not inspect argo_profiles columns: {e}")
+                self._cached_profile_cols = {
+                    "float_id", "cycle_number", "profile_time", "latitude", "longitude",
+                    "pressure", "temperature", "salinity", "bgc_params"
+                }
+        return self._cached_profile_cols
+
     def insert_profile(self, profile_data):
         """
         Inserts a new ARGO profile into MySQL.
+        Dynamically adapts to available columns in argo_profiles to support
+        both pre-migration and post-migration database schemas.
         """
 
         logging.info("Inserting profile into MySQL...")
 
-        insert_sql = text("""
+        table_cols = self._get_profile_table_columns()
+        insert_keys = [k for k in profile_data.keys() if k in table_cols]
+        if not insert_keys:
+            raise ValueError("No valid columns provided for argo_profiles insertion.")
+
+        cols_str = ", ".join(insert_keys)
+        vals_str = ", ".join(f":{k}" for k in insert_keys)
+        filtered_data = {k: profile_data[k] for k in insert_keys}
+
+        insert_sql = text(f"""
             INSERT INTO argo_profiles
             (
-                float_id,
-                cycle_number,
-                profile_time,
-                latitude,
-                longitude,
-                pressure,
-                temperature,
-                salinity,
-                bgc_params
+                {cols_str}
             )
             VALUES
             (
-                :float_id,
-                :cycle_number,
-                :profile_time,
-                :latitude,
-                :longitude,
-                :pressure,
-                :temperature,
-                :salinity,
-                :bgc_params
+                {vals_str}
             )
         """)
 
@@ -306,7 +315,7 @@ class DatabaseManager:
 
             result = conn.execute(
                 insert_sql,
-                profile_data
+                filtered_data
             )
 
             conn.commit()

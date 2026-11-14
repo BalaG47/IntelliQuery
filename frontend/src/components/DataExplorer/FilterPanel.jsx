@@ -87,13 +87,13 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
   }
 
   return (
-    <div className="bg-[#1E2128B3] border border-[#FF1F4B33] rounded-xl p-4 mb-6 shadow-lg">
-      <div className="flex items-center justify-between mb-3 border-b border-gray-800 pb-2">
-        <div className="flex items-center gap-2 text-white font-medium text-sm">
-          <FiFilter className="text-blue-400" />
+    <div className="bg-surface-0 border border-subtle rounded-[3px] p-4 mb-6">
+      <div className="flex items-center justify-between mb-3 border-b border-subtle pb-2">
+        <div className="flex items-center gap-2 text-primary font-medium text-sm">
+          <FiFilter className="text-accent" />
           <span>Filters & Constraints</span>
           {resultCount !== undefined && (
-            <span className="ml-2 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-900/60 text-blue-300 border border-blue-700/50">
+            <span className="ml-2 text-xs font-mono px-2 py-0.5 rounded-[2px] bg-surface-1 border border-subtle text-secondary">
               {resultCount.toLocaleString()} {resultCount === 1 ? "result" : "results"}
             </span>
           )}
@@ -102,7 +102,7 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
           <button
             type="button"
             onClick={handleClear}
-            className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-400 transition"
+            className="flex items-center gap-1 text-xs font-mono text-muted hover:text-state-error transition-colors cursor-pointer"
           >
             <FiRotateCcw className="text-xs" />
             <span>Reset All</span>
@@ -112,8 +112,8 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
 
       {/* Validation Error Alert */}
       {validationError && (
-        <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-red-900/30 border border-red-500/50 text-red-200 text-xs">
-          <FiAlertCircle className="text-red-400 text-base shrink-0" />
+        <div className="flex items-center gap-2 p-3 mb-4 rounded-[2px] bg-surface-1 border border-state-error text-state-error text-xs font-mono">
+          <FiAlertCircle className="text-base shrink-0" />
           <span>{validationError}</span>
         </div>
       )}
@@ -121,11 +121,11 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
       {/* Active Filter Chips */}
       {activeChips.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 mb-4">
-          <span className="text-xs text-gray-400 font-medium">Active:</span>
+          <span className="text-xs font-mono text-muted uppercase">Active:</span>
           {activeChips.map((chip) => (
             <span
               key={chip.field}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-950/80 border border-blue-500/40 text-blue-200 text-xs font-medium"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded-[2px] bg-surface-1 border border-subtle text-primary text-xs font-mono"
             >
               <span>{chip.label}</span>
               <button
@@ -139,7 +139,7 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
                     removeChip(chip.field);
                   }
                 }}
-                className="hover:text-white transition"
+                className="text-muted hover:text-primary transition-colors cursor-pointer"
                 title="Remove filter"
               >
                 <FiX className="text-xs" />
@@ -154,63 +154,73 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
           {/* WMO Number */}
           <div>
-            <label className="block text-[#BDC1CAFF] mb-1 font-medium">Float WMO Number</label>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Float WMO Number
+            </label>
             <input
               type="text"
               placeholder="e.g. 1900121"
               value={localFilters.wmo_number || ""}
               onChange={(e) => handleChange("wmo_number", e.target.value)}
-              className="w-full px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
             />
           </div>
 
           {/* Profile ID */}
           <div>
-            <label className="block text-[#BDC1CAFF] mb-1 font-medium">Profile ID</label>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Profile ID
+            </label>
             <input
               type="number"
               placeholder="e.g. 50"
               value={localFilters.profile_id || ""}
               onChange={(e) => handleChange("profile_id", e.target.value)}
-              className="w-full px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
             />
           </div>
 
           {/* Cycle Number */}
           <div>
-            <label className="block text-[#BDC1CAFF] mb-1 font-medium">Cycle Number</label>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Cycle Number
+            </label>
             <input
               type="number"
               placeholder="e.g. 45"
               value={localFilters.cycle_number || ""}
               onChange={(e) => handleChange("cycle_number", e.target.value)}
-              className="w-full px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
             />
           </div>
 
           {/* Date Range */}
           <div>
-            <label className="block text-[#BDC1CAFF] mb-1 font-medium">Date Range (From - To)</label>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Date Range (From - To)
+            </label>
             <div className="flex items-center gap-1">
               <input
                 type="date"
                 value={localFilters.start_date || ""}
                 onChange={(e) => handleChange("start_date", e.target.value)}
-                className="w-1/2 px-2 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 text-xs"
+                className="w-1/2 px-2 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
               />
-              <span className="text-gray-500">-</span>
+              <span className="text-muted">-</span>
               <input
                 type="date"
                 value={localFilters.end_date || ""}
                 onChange={(e) => handleChange("end_date", e.target.value)}
-                className="w-1/2 px-2 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500 text-xs"
+                className="w-1/2 px-2 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
               />
             </div>
           </div>
 
           {/* Latitude Range */}
           <div>
-            <label className="block text-[#BDC1CAFF] mb-1 font-medium">Latitude Range (°N)</label>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Latitude Range (°N)
+            </label>
             <div className="flex items-center gap-1">
               <input
                 type="number"
@@ -218,23 +228,25 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
                 placeholder="Min Lat"
                 value={localFilters.min_lat || ""}
                 onChange={(e) => handleChange("min_lat", e.target.value)}
-                className="w-1/2 px-2 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                className="w-1/2 px-2 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
               />
-              <span className="text-gray-500">-</span>
+              <span className="text-muted">-</span>
               <input
                 type="number"
                 step="any"
                 placeholder="Max Lat"
                 value={localFilters.max_lat || ""}
                 onChange={(e) => handleChange("max_lat", e.target.value)}
-                className="w-1/2 px-2 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                className="w-1/2 px-2 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
               />
             </div>
           </div>
 
           {/* Longitude Range */}
           <div>
-            <label className="block text-[#BDC1CAFF] mb-1 font-medium">Longitude Range (°E)</label>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Longitude Range (°E)
+            </label>
             <div className="flex items-center gap-1">
               <input
                 type="number"
@@ -242,16 +254,16 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
                 placeholder="Min Lon"
                 value={localFilters.min_lon || ""}
                 onChange={(e) => handleChange("min_lon", e.target.value)}
-                className="w-1/2 px-2 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                className="w-1/2 px-2 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
               />
-              <span className="text-gray-500">-</span>
+              <span className="text-muted">-</span>
               <input
                 type="number"
                 step="any"
                 placeholder="Max Lon"
                 value={localFilters.max_lon || ""}
                 onChange={(e) => handleChange("max_lon", e.target.value)}
-                className="w-1/2 px-2 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                className="w-1/2 px-2 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
               />
             </div>
           </div>
@@ -260,7 +272,7 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
           <div className="sm:col-span-2 md:col-span-3 lg:col-span-2 flex items-end gap-2 pt-2">
             <button
               type="submit"
-              className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition"
+              className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 bg-accent hover:opacity-90 text-accent-contrast font-medium rounded-[2px] transition-colors cursor-pointer"
             >
               <FiCheck className="text-sm" />
               <span>Apply Filters</span>
@@ -268,7 +280,7 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
             <button
               type="button"
               onClick={handleClear}
-              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 font-medium rounded-lg transition"
+              className="px-4 py-2 bg-surface-1 hover:bg-surface-2 border border-subtle text-secondary hover:text-primary font-mono text-xs rounded-[2px] transition-colors cursor-pointer"
             >
               Clear
             </button>

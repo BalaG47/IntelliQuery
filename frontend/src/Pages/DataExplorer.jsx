@@ -39,7 +39,7 @@ const DataExplorer = () => {
   // Floats Tab State
   const [floats, setFloats] = useState([]);
   const [floatsPagination, setFloatsPagination] = useState({ page: 1, limit: 20, total: 0, total_pages: 0 });
-  const [floatsLoading, setFloatsLoading] = useState(false);
+  const [floatsLoading, setFloatsLoading] = useState(true);
   const [floatsError, setFloatsError] = useState(null);
   const [floatsSortBy, setFloatsSortBy] = useState("wmo_number");
   const [floatsSortDir, setFloatsSortDir] = useState("asc");
@@ -193,16 +193,16 @@ const DataExplorer = () => {
     }
   };
 
-  // Switch from Floats tab to Profiles tab for a specific WMO
-  const handleSelectWmo = (wmoNumber) => {
-    const updated = { ...appliedFilters, wmo_number: String(wmoNumber) };
+  // Click on "View Profiles" in a float row: switches tab to profiles & sets WMO filter
+  const handleSelectWmo = (wmo) => {
+    const updated = { ...appliedFilters, wmo_number: String(wmo) };
     setAppliedFilters(updated);
     setActiveTab("profiles");
     loadProfiles(1, profilesSortBy, profilesSortDir, updated);
   };
 
   return (
-    <div className="bg-[#000000] min-h-screen text-white">
+    <div className="bg-app min-h-screen text-primary">
       <Navbar />
       <Sidebar />
 
@@ -213,16 +213,18 @@ const DataExplorer = () => {
       />
 
       {/* Main Content Area */}
-      <main className="ml-60 pt-20 p-6 max-w-7xl">
+      <main className="lg:ml-60 ml-0 pt-20 p-4 sm:p-6 max-w-7xl min-w-0">
         {/* Module Header */}
         <div className="mb-6">
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2.5 rounded-xl bg-blue-600/20 border border-blue-500/30 text-blue-400 text-2xl">
+            <div className="p-2.5 rounded-[2px] bg-surface-1 border border-subtle text-accent text-2xl shrink-0">
               <FiLayers />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">Data Explorer</h1>
-              <p className="text-sm text-[#BDC1CAFF]">
+              <h1 className="text-2xl font-bold tracking-tight text-primary font-heading">
+                Data Explorer
+              </h1>
+              <p className="text-sm text-secondary font-mono">
                 Explore, filter, and inspect oceanographic profiles and float trajectories from the ARGO profiling network.
               </p>
             </div>
@@ -231,11 +233,12 @@ const DataExplorer = () => {
 
         {/* Global Summary Cards */}
         {overviewError ? (
-          <div className="p-4 mb-6 rounded-xl bg-red-900/30 border border-red-500/50 text-red-200 text-sm flex items-center justify-between">
+          <div className="p-3.5 mb-6 rounded-[2px] bg-surface-1 border border-state-error/40 text-state-error text-xs font-mono flex items-center justify-between">
             <span>{overviewError}</span>
             <button
+              type="button"
               onClick={loadOverview}
-              className="px-3 py-1 bg-red-800 hover:bg-red-700 rounded text-xs text-white"
+              className="px-3 py-1 bg-state-error hover:opacity-90 text-white dark:text-[#071A15] rounded-[2px] text-xs font-mono font-medium transition-colors cursor-pointer"
             >
               Retry
             </button>
@@ -254,36 +257,38 @@ const DataExplorer = () => {
         />
 
         {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 mb-4 border-b border-gray-800">
+        <div className="flex items-center gap-2 mb-4 border-b border-subtle overflow-x-auto">
           <button
+            type="button"
             onClick={() => setActiveTab("floats")}
-            className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition ${
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-mono uppercase tracking-wider border-b-2 transition-colors cursor-pointer ${
               activeTab === "floats"
-                ? "border-blue-500 text-blue-400 bg-blue-950/20"
-                : "border-transparent text-[#BDC1CAFF] hover:text-white hover:border-gray-700"
+                ? "border-accent text-accent font-semibold bg-surface-1/50"
+                : "border-transparent text-secondary hover:text-primary hover:bg-surface-1/30"
             }`}
           >
-            <FiLayers className="text-base" />
+            <FiLayers className="text-sm" />
             <span>Floats</span>
             {floatsPagination.total > 0 && (
-              <span className="ml-1 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-300">
+              <span className="ml-1 text-[11px] px-1.5 py-0.5 rounded-[2px] bg-surface-1 border border-subtle text-muted">
                 {floatsPagination.total}
               </span>
             )}
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab("profiles")}
-            className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition ${
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-mono uppercase tracking-wider border-b-2 transition-colors cursor-pointer ${
               activeTab === "profiles"
-                ? "border-blue-500 text-blue-400 bg-blue-950/20"
-                : "border-transparent text-[#BDC1CAFF] hover:text-white hover:border-gray-700"
+                ? "border-accent text-accent font-semibold bg-surface-1/50"
+                : "border-transparent text-secondary hover:text-primary hover:bg-surface-1/30"
             }`}
           >
-            <FiList className="text-base" />
+            <FiList className="text-sm" />
             <span>Profiles</span>
             {profilesPagination.total > 0 && (
-              <span className="ml-1 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-300">
+              <span className="ml-1 text-[11px] px-1.5 py-0.5 rounded-[2px] bg-surface-1 border border-subtle text-muted">
                 {profilesPagination.total.toLocaleString()}
               </span>
             )}
@@ -302,7 +307,7 @@ const DataExplorer = () => {
             onSort={handleFloatsSort}
             onPageChange={(newPage) => loadFloats(newPage, floatsSortBy, floatsSortDir, appliedFilters.wmo_number)}
             onSelectWmo={handleSelectWmo}
-            projectsRecorded={overview?.projects?.recorded ?? false}
+            projectsRecorded={overview ? overview.projects?.recorded : undefined}
             onRetry={() => loadFloats(floatsPagination.page, floatsSortBy, floatsSortDir, appliedFilters.wmo_number)}
           />
         ) : (
@@ -322,8 +327,8 @@ const DataExplorer = () => {
         )}
 
         {/* Footnote */}
-        <footer className="mt-8 pt-4 border-t border-gray-800/80 text-center">
-          <p className="text-xs text-[#BDC1CAFF]">
+        <footer className="mt-8 pt-4 border-t border-subtle text-center">
+          <p className="text-xs text-muted font-mono">
             Raw, unadjusted measurements. No QC flags in the current database.
           </p>
         </footer>

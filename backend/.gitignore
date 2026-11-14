@@ -31,6 +31,12 @@ left data/
 *.grib
 *.grb
 
+# Local database backups
+backups/
+
+# Temporary development and benchmark scripts
+scratch/
+
 # Local vector databases and generated embeddings
 chroma_db_storage/
 chroma_db_storage_fresh/

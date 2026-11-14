@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   FiGlobe,
   FiLayers,
@@ -7,56 +7,78 @@ import {
   FiChevronDown,
   FiChevronRight,
   FiInfo,
+  FiX,
 } from "react-icons/fi";
 import { NavLink } from "react-router-dom";
 
 const Sidebar = () => {
   const [openMenu, setOpenMenu] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    const handleToggle = () => setMobileOpen((prev) => !prev);
+    const handleClose = () => setMobileOpen(false);
+    window.addEventListener("toggle-sidebar", handleToggle);
+    window.addEventListener("close-sidebar", handleClose);
+    return () => {
+      window.removeEventListener("toggle-sidebar", handleToggle);
+      window.removeEventListener("close-sidebar", handleClose);
+    };
+  }, []);
 
   const navLinkClass = ({ isActive }) =>
     `flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-[3px] transition-colors duration-100 ${
       isActive
-        ? "text-[#0E5E6F] dark:text-[#48C9A6] bg-[#EBE5DA] dark:bg-[#17232E] font-semibold border-l-2 border-[#0E5E6F] dark:border-[#48C9A6]"
-        : "text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA]/60 dark:hover:bg-[#17232E]/60"
+        ? "text-accent bg-surface-1 font-semibold border-l-2 border-accent"
+        : "text-secondary hover:text-primary hover:bg-surface-1/60"
     }`;
 
-  return (
-    <aside
-      className="fixed top-0 left-0 h-full w-60 bg-[#FAF8F5] dark:bg-[#111A22] text-[#141C24] dark:text-[#E5EDF5] border-r border-[#DDD7CB] dark:border-[#223344] flex flex-col p-4 justify-between z-40"
-      aria-label="Application Sidebar"
-    >
+  const sidebarContent = (
+    <div className="flex flex-col h-full justify-between">
       {/* Top: Brand & Navigation Links */}
       <div>
         {/* Logo / App Name */}
-        <div className="mb-6 pt-2 px-1">
-          <NavLink
-            to="/"
-            className="flex items-baseline gap-1.5 font-bold tracking-tight text-xl text-[#141C24] dark:text-[#E5EDF5]"
+        <div className="mb-6 pt-3 px-1 flex items-start justify-between">
+          <div>
+            <NavLink
+              to="/"
+              onClick={() => setMobileOpen(false)}
+              className="flex items-baseline gap-1.5 font-bold tracking-tight text-lg text-primary"
+            >
+              <span>INTELLI</span>
+              <span className="text-accent">QUERY</span>
+            </NavLink>
+            <p className="text-[10px] font-mono uppercase tracking-widest text-muted mt-1">
+              ARGO Ocean Console
+            </p>
+          </div>
+          {/* Mobile close button */}
+          <button
+            type="button"
+            onClick={() => setMobileOpen(false)}
+            className="lg:hidden p-1 rounded-[3px] text-muted hover:text-primary"
+            aria-label="Close Sidebar"
           >
-            <span>INTELLI</span>
-            <span className="text-[#0E5E6F] dark:text-[#48C9A6]">QUERY</span>
-          </NavLink>
-          <p className="text-[10px] font-mono uppercase tracking-widest text-[#4F5E6E] dark:text-[#8BA2B6] mt-0.5">
-            ARGO Ocean Console — IntelliQuery
-          </p>
+            <FiX className="text-base" />
+          </button>
         </div>
 
         {/* Navigation Rack */}
         <nav className="flex flex-col gap-1">
           {/* Home */}
-          <NavLink to="/" end className={navLinkClass}>
+          <NavLink to="/" end onClick={() => setMobileOpen(false)} className={navLinkClass}>
             <FiGlobe className="text-sm shrink-0" />
             <span>Home</span>
           </NavLink>
 
           {/* Data Explorer */}
-          <NavLink to="/data" className={navLinkClass}>
+          <NavLink to="/data" onClick={() => setMobileOpen(false)} className={navLinkClass}>
             <FiLayers className="text-sm shrink-0" />
             <span>Data Explorer</span>
           </NavLink>
 
           {/* Chat */}
-          <NavLink to="/chat" className={navLinkClass}>
+          <NavLink to="/chat" onClick={() => setMobileOpen(false)} className={navLinkClass}>
             <FiMessageSquare className="text-sm shrink-0" />
             <span>Chat</span>
           </NavLink>
@@ -66,7 +88,7 @@ const Sidebar = () => {
             <button
               type="button"
               onClick={() => setOpenMenu(!openMenu)}
-              className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium rounded-[3px] text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA]/60 dark:hover:bg-[#17232E]/60 transition-colors duration-100 cursor-pointer"
+              className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium rounded-[3px] text-secondary hover:text-primary hover:bg-surface-1/60 transition-colors duration-100 cursor-pointer"
             >
               <span className="flex items-center gap-3">
                 <FiBarChart2 className="text-sm shrink-0" />
@@ -76,22 +98,25 @@ const Sidebar = () => {
             </button>
 
             {openMenu && (
-              <div className="ml-6 pl-2 border-l border-[#DDD7CB] dark:border-[#223344] mt-1 flex flex-col gap-0.5">
+              <div className="ml-6 pl-2 border-l border-subtle mt-1 flex flex-col gap-0.5">
                 <NavLink
                   to="/visualizations/globe"
-                  className="px-2 py-1 text-xs text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA] dark:hover:bg-[#17232E] rounded-[2px]"
+                  onClick={() => setMobileOpen(false)}
+                  className="px-2 py-1 text-xs text-secondary hover:text-primary hover:bg-surface-1 rounded-[2px]"
                 >
                   3D Globe Overlays
                 </NavLink>
                 <NavLink
                   to="/visualizations/charts"
-                  className="px-2 py-1 text-xs text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA] dark:hover:bg-[#17232E] rounded-[2px]"
+                  onClick={() => setMobileOpen(false)}
+                  className="px-2 py-1 text-xs text-secondary hover:text-primary hover:bg-surface-1 rounded-[2px]"
                 >
                   Charts
                 </NavLink>
                 <NavLink
                   to="/visualizations/flows"
-                  className="px-2 py-1 text-xs text-[#475569] dark:text-[#9AB0C4] hover:text-[#141C24] dark:hover:text-[#E5EDF5] hover:bg-[#EBE5DA] dark:hover:bg-[#17232E] rounded-[2px]"
+                  onClick={() => setMobileOpen(false)}
+                  className="px-2 py-1 text-xs text-secondary hover:text-primary hover:bg-surface-1 rounded-[2px]"
                 >
                   Data Flows
                 </NavLink>
@@ -100,7 +125,7 @@ const Sidebar = () => {
           </div>
 
           {/* Insights */}
-          <NavLink to="/insights" className={navLinkClass}>
+          <NavLink to="/insights" onClick={() => setMobileOpen(false)} className={navLinkClass}>
             <FiInfo className="text-sm shrink-0" />
             <span>Insights</span>
           </NavLink>
@@ -108,14 +133,45 @@ const Sidebar = () => {
       </div>
 
       {/* Bottom telemetry footer indicator */}
-      <div className="pt-3 border-t border-[#DDD7CB] dark:border-[#223344] text-[10px] font-mono text-[#4F5E6E] dark:text-[#8BA2B6]">
+      <div className="pt-3 border-t border-subtle text-[10px] font-mono text-muted">
         <div className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-[#1A633B] dark:bg-[#38D39F] shrink-0" />
-          <span>STATION ONLINE</span>
+          <span className="w-2 h-2 rounded-full bg-[#1A633B] dark:bg-[#38D39F] shrink-0 animate-pulse" />
+          <span className="font-semibold text-secondary">STATION ONLINE</span>
         </div>
-        <p className="mt-1 text-[9px] text-[#7A889B] dark:text-[#5E6E80]">Global ARGO Network</p>
+        <p className="mt-1 text-[9px] text-muted">Global ARGO Network</p>
       </div>
-    </aside>
+    </div>
+  );
+
+  return (
+    <>
+      {/* Desktop Persistent Sidebar */}
+      <aside
+        className="hidden lg:flex fixed top-14 left-0 h-[calc(100vh-3.5rem)] w-60 bg-surface-0 text-primary border-r border-subtle flex-col p-4 justify-between z-40"
+        aria-label="Application Sidebar"
+      >
+        {sidebarContent}
+      </aside>
+
+      {/* Mobile Drawer (visible only when mobileOpen is true below lg) */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/50 transition-opacity"
+            onClick={() => setMobileOpen(false)}
+            aria-hidden="true"
+          />
+          {/* Drawer container */}
+          <aside
+            className="relative w-64 max-w-[80vw] h-full bg-surface-0 text-primary border-r border-subtle p-4 shadow-xl flex flex-col justify-between z-10"
+            aria-label="Mobile Navigation Sidebar"
+          >
+            {sidebarContent}
+          </aside>
+        </div>
+      )}
+    </>
   );
 };
 

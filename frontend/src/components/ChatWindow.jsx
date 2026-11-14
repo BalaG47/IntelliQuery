@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
+import { FiSend } from "react-icons/fi";
 
 const ChatWindow = ({ onFirstMessage }) => {
   const [messages, setMessages] = useState([
@@ -19,7 +20,7 @@ const ChatWindow = ({ onFirstMessage }) => {
   }, [messages, loading]);
 
   const sendMessage = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || loading) return;
 
     if (messages.length === 1 && onFirstMessage) {
       onFirstMessage();
@@ -35,20 +36,18 @@ const ChatWindow = ({ onFirstMessage }) => {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    const currentInput = input;
     setInput("");
     setLoading(true);
 
     try {
-      const res = await axios.post(
-        "http://localhost:5000/get-question",
-        {
-          prompt: input,
-        }
-      );
+      const res = await axios.post("http://localhost:5000/get-question", {
+        prompt: currentInput,
+      });
 
       const aiMessage = {
         sender: "ai",
-        text: res.data.response,
+        text: res.data.response || "No response received.",
         data: res.data.data || [],
         timestamp: new Date().toLocaleTimeString([], {
           hour: "2-digit",
@@ -57,9 +56,7 @@ const ChatWindow = ({ onFirstMessage }) => {
       };
 
       setMessages((prev) => [...prev, aiMessage]);
-
     } catch (error) {
-
       console.error("Error fetching response:", error);
 
       setMessages((prev) => [
@@ -74,88 +71,137 @@ const ChatWindow = ({ onFirstMessage }) => {
           }),
         },
       ]);
-
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#1E2128B3] text-white rounded-xl border border-[#FF1F4B33] shadow-lg overflow-hidden">
-
-      {/* Header */}
-      <div className="p-4 border-b border-gray-700 flex items-center justify-between bg-gradient-to-r from-blue-600 to-cyan-500">
-        <h2 className="text-xl font-bold drop-shadow-md">🌊 IntelliQuery AI Chat</h2>
-        <span className="text-gray-200 text-sm">Connected</span>
+    <div className="flex flex-col h-full bg-surface-0 text-primary rounded-[3px] border border-subtle shadow-none overflow-hidden">
+      {/* Header — flat bar on surface-1 with hairline bottom border, no gradient */}
+      <div className="p-3.5 border-b border-subtle bg-surface-1 flex items-center justify-between shrink-0">
+        <h2 className="text-sm font-bold font-heading tracking-tight text-primary">
+          IntelliQuery AI Chat
+        </h2>
+        {/* Square indicator in state-success + mono connected label */}
+        <div className="flex items-center gap-1.5 font-mono text-xs text-secondary">
+          <span className="w-2 h-2 rounded-[1px] bg-state-success shrink-0" />
+          <span>Connected</span>
+        </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 p-4 overflow-y-auto space-y-4 scrollbar-thin scrollbar-thumb-blue-500 scrollbar-track-gray-800">
+      {/* Messages list — scrolls inside its own container */}
+      <div className="flex-1 p-4 overflow-y-auto space-y-3.5 min-h-0">
         {messages.map((msg, idx) => (
           <div
             key={idx}
-            className={`flex items-end ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
+            className={`flex flex-col ${msg.sender === "user" ? "items-end" : "items-start"}`}
           >
-            
-            {msg.sender === "ai" && (
-              <div className="flex flex-col items-center mr-2">
-                <div className="w-10 h-10 rounded-full bg-cyan-500 flex items-center justify-center text-white font-bold">
-                  AI
-                </div>
-                <span className="text-xs text-gray-400 mt-1" style={{ marginTop: "6px" }}>IntelliQuery</span>
-              </div>
-            )}
-            {msg.sender === "user" && (
-              <div className="flex flex-col items-center  ml-2">
-                <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">
-                  U
-                </div>
-                <span className="text-xs text-gray-400 mt-1" style={{ marginTop: "6px" }}>You</span>
-              </div>
-            )}
+            {/* Sender and timestamp header in mono face, muted */}
+            <div className="flex items-center gap-2 mb-1 px-1 font-mono text-[11px] text-muted">
+              <span className="font-semibold uppercase tracking-wider text-secondary">
+                {msg.sender === "ai" ? "IntelliQuery" : "You"}
+              </span>
+              <span>·</span>
+              <span>{msg.timestamp}</span>
+            </div>
 
-            {/* Message Bubble */}
+            {/* Message panel — 2-4px radius, flat border */}
             <div
-              className={`ml-2 bg-gradient-to-br p-4 rounded-2xl shadow-md break-words transition-all duration-200 ${
+              className={`rounded-[3px] p-3.5 border max-w-[85%] text-xs leading-relaxed break-words ${
                 msg.sender === "user"
-                  ? "from-blue-500 to-blue-600 text-white rounded-br-none"
-                  : "from-gray-700 to-gray-800 text-gray-100 rounded-bl-none"
+                  ? "bg-accent-surface border-accent/40 text-primary self-end"
+                  : "bg-surface-0 border-subtle text-primary self-start shadow-none"
               }`}
-              style={{ maxWidth: "70%" }}
             >
               {msg.sender === "ai" ? (
-                <div className="prose prose-invert text-sm">
-                  <ReactMarkdown>{msg.text}</ReactMarkdown>
+                <div className="space-y-2">
+                  <ReactMarkdown
+                    components={{
+                      h1: ({ node, ...props }) => (
+                        <h1 className="text-sm font-bold font-heading text-primary my-2" {...props} />
+                      ),
+                      h2: ({ node, ...props }) => (
+                        <h2 className="text-xs font-bold font-heading text-primary my-1.5" {...props} />
+                      ),
+                      h3: ({ node, ...props }) => (
+                        <h3 className="text-xs font-semibold font-heading text-primary my-1" {...props} />
+                      ),
+                      p: ({ node, ...props }) => (
+                        <p className="text-xs text-primary leading-relaxed my-1" {...props} />
+                      ),
+                      ul: ({ node, ...props }) => (
+                        <ul className="list-disc list-inside text-xs text-secondary my-1 space-y-0.5" {...props} />
+                      ),
+                      ol: ({ node, ...props }) => (
+                        <ol className="list-decimal list-inside text-xs text-secondary my-1 space-y-0.5" {...props} />
+                      ),
+                      li: ({ node, ...props }) => (
+                        <li className="text-xs text-secondary" {...props} />
+                      ),
+                      code: ({ node, inline, className, children, ...props }) =>
+                        inline ? (
+                          <code
+                            className="px-1 py-0.5 rounded-[2px] bg-surface-1 border border-subtle font-mono text-[11px] text-accent"
+                            {...props}
+                          >
+                            {children}
+                          </code>
+                        ) : (
+                          <pre className="p-2 rounded-[2px] bg-surface-1 border border-subtle font-mono text-[11px] text-primary overflow-x-auto my-2">
+                            <code {...props}>{children}</code>
+                          </pre>
+                        ),
+                      table: ({ node, ...props }) => (
+                        <div className="overflow-x-auto my-2 border border-subtle rounded-[2px]">
+                          <table className="w-full text-left text-xs border-collapse" {...props} />
+                        </div>
+                      ),
+                      thead: ({ node, ...props }) => (
+                        <thead className="bg-surface-1 border-b border-subtle text-secondary font-mono text-[10px] uppercase" {...props} />
+                      ),
+                      th: ({ node, ...props }) => (
+                        <th className="px-2 py-1 font-medium" {...props} />
+                      ),
+                      td: ({ node, ...props }) => (
+                        <td className="px-2 py-1 border-t border-subtle text-primary font-mono text-[11px]" {...props} />
+                      ),
+                    }}
+                  >
+                    {msg.text}
+                  </ReactMarkdown>
                 </div>
               ) : (
-                <p className="text-sm">{msg.text}</p>
+                <p className="text-xs whitespace-pre-wrap">{msg.text}</p>
               )}
+
+              {/* Profiles data table if attached */}
               {msg.sender === "ai" && Array.isArray(msg.data) && msg.data.length > 0 && (
-                <div className="mt-3 rounded-lg border border-gray-600 bg-gray-900/60 p-2">
-                  <p className="mb-2 text-xs font-semibold text-cyan-300">
+                <div className="mt-3 rounded-[2px] border border-subtle bg-surface-1 p-2">
+                  <p className="mb-2 text-[11px] font-mono font-medium text-accent uppercase tracking-wider">
                     Returned profiles ({msg.data.length})
                   </p>
-                  <div className="max-h-64 overflow-auto rounded">
-                    <table className="w-full text-left text-xs text-gray-200">
-                      <thead className="sticky top-0 bg-gray-800 text-cyan-200">
+                  <div className="max-h-60 overflow-auto rounded-[2px]">
+                    <table className="w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-surface-2 text-secondary font-mono text-[10px] uppercase tracking-wider">
                         <tr>
-                          <th className="px-2 py-1">Profile</th>
-                          <th className="px-2 py-1">Cycle</th>
-                          <th className="px-2 py-1">Time</th>
-                          <th className="px-2 py-1">Latitude</th>
-                          <th className="px-2 py-1">Longitude</th>
+                          <th className="px-2 py-1 font-medium">Profile</th>
+                          <th className="px-2 py-1 font-medium">Cycle</th>
+                          <th className="px-2 py-1 font-medium">Time</th>
+                          <th className="px-2 py-1 font-medium">Latitude</th>
+                          <th className="px-2 py-1 font-medium">Longitude</th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className="divide-y divide-subtle text-primary font-mono text-[11px]">
                         {msg.data.map((profile, profileIndex) => (
-                          <tr key={profile.profile_id ?? profileIndex} className="border-t border-gray-700">
-                            <td className="px-2 py-1">{profile.profile_id ?? "—"}</td>
-                            <td className="px-2 py-1">{profile.cycle_number ?? "—"}</td>
-                            <td className="px-2 py-1 whitespace-nowrap">
+                          <tr key={profile.profile_id ?? profileIndex} className="hover:bg-surface-2/60 transition-colors">
+                            <td className="px-2 py-1 tabular-nums">{profile.profile_id ?? "—"}</td>
+                            <td className="px-2 py-1 tabular-nums">{profile.cycle_number ?? "—"}</td>
+                            <td className="px-2 py-1 whitespace-nowrap text-secondary">
                               {profile.profile_time ? String(profile.profile_time).slice(0, 19) : "—"}
                             </td>
-                            <td className="px-2 py-1">{profile.latitude ?? "—"}</td>
-                            <td className="px-2 py-1">{profile.longitude ?? "—"}</td>
+                            <td className="px-2 py-1 tabular-nums text-secondary">{profile.latitude ?? "—"}</td>
+                            <td className="px-2 py-1 tabular-nums text-secondary">{profile.longitude ?? "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -163,31 +209,40 @@ const ChatWindow = ({ onFirstMessage }) => {
                   </div>
                 </div>
               )}
-              <span className="text-xs text-gray-400 mt-1 block text-right">{msg.timestamp}</span>
             </div>
           </div>
         ))}
+
+        {/* Calm loading indicator (no bouncing dots) */}
         {loading && (
-          <div className="text-gray-400 text-sm italic animate-pulse">IntelliQuery is thinking...</div>
+          <div className="flex items-center gap-2 p-2 font-mono text-xs text-muted">
+            <span className="w-1.5 h-1.5 rounded-[1px] bg-accent animate-pulse" />
+            <span>IntelliQuery is querying telemetry data...</span>
+          </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <div className="p-4 border-t border-gray-700 bg-gray-900 flex items-center gap-2 rounded-b-xl">
+      {/* Input bar — sharp rectangular input with 3:1 border, 1px accent focus ring, rectangular accent send button */}
+      <div className="p-3 border-t border-subtle bg-surface-1 flex items-center gap-2 shrink-0">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your message..."
-          className="flex-1 bg-gray-800 text-white px-4 py-2 rounded-full outline-none focus:ring-2 focus:ring-cyan-400 placeholder-gray-400 transition"
+          placeholder="Ask about oceanographic data, floats, temperature..."
+          className="flex-1 bg-surface-0 border border-strong text-primary placeholder:text-muted px-3 py-2 rounded-[2px] font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
           onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          disabled={loading}
         />
         <button
+          type="button"
           onClick={sendMessage}
-          className="bg-cyan-500 hover:bg-cyan-600 px-4 py-2 rounded-full transition-transform active:scale-95 text-white shadow-md"
+          disabled={loading || !input.trim()}
+          className="bg-accent hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed text-accent-contrast px-3.5 py-2 rounded-[2px] font-mono text-xs font-medium transition-opacity flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+          aria-label="Send message"
         >
-          ➤
+          <FiSend className="text-xs" />
+          <span className="hidden sm:inline uppercase tracking-wider text-[11px]">Send</span>
         </button>
       </div>
     </div>

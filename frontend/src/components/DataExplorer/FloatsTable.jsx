@@ -27,28 +27,33 @@ const FloatsTable = ({
   };
 
   const renderSortIcon = (col) => {
-    if (sortBy !== col) return <span className="opacity-30">↕</span>;
-    return sortDir === "asc" ? <FiChevronUp className="text-blue-400" /> : <FiChevronDown className="text-blue-400" />;
+    if (sortBy !== col) return <span className="opacity-30 ml-1">↕</span>;
+    return sortDir === "asc" ? (
+      <FiChevronUp className="text-accent ml-1" />
+    ) : (
+      <FiChevronDown className="text-accent ml-1" />
+    );
   };
 
   const formatDate = (isoStr) => {
-    if (!isoStr) return "--";
+    if (!isoStr) return <span className="text-muted">—</span>;
     return isoStr.replace("T", " ");
   };
 
   return (
-    <div className="bg-[#1E2128B3] border border-[#FF1F4B33] rounded-xl shadow-lg overflow-hidden">
+    <div className="bg-surface-0 border border-subtle rounded-[3px] overflow-hidden">
       {/* Table Header Note */}
-      <div className="p-4 border-b border-gray-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div className="p-4 border-b border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
-          <h3 className="text-base font-semibold text-white">ARGO Floats Directory</h3>
-          <p className="text-xs text-[#BDC1CAFF]">
+          <h3 className="text-base font-semibold text-primary font-heading">ARGO Floats Directory</h3>
+          <p className="text-xs text-secondary font-mono">
             Overview of registered ocean profiling floats and total cycles.
           </p>
         </div>
-        {!projectsRecorded && (
-          <div className="flex items-center gap-1.5 text-xs text-amber-300/80 bg-amber-950/40 border border-amber-800/40 px-2.5 py-1 rounded-md">
-            <FiInfo className="text-amber-400 shrink-0" />
+        {/* Only show banner when overview loaded and explicitly reports recorded === false */}
+        {projectsRecorded === false && (
+          <div className="flex items-center gap-1.5 text-xs text-state-warning bg-surface-1 border border-state-warning/40 px-2.5 py-1 rounded-[2px] font-mono">
+            <FiInfo className="text-state-warning shrink-0" />
             <span>Project and platform are not recorded in the current database.</span>
           </div>
         )}
@@ -64,80 +69,92 @@ const FloatsTable = ({
       ) : floats.length === 0 ? (
         <EmptyState title="No floats found" message="No ARGO floats match the search criteria." />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-gray-900/80 border-b border-gray-800 text-[#BDC1CAFF] uppercase tracking-wider font-medium">
+        <div className="overflow-x-auto w-full">
+          <table className="w-full text-left text-xs min-w-[700px]">
+            <thead className="bg-surface-1 border-b border-subtle text-secondary uppercase tracking-wider font-mono text-[11px]">
               <tr>
                 <th
                   onClick={() => handleSort("wmo_number")}
-                  className="px-4 py-3 cursor-pointer hover:text-white transition select-none"
+                  className="px-4 py-3 cursor-pointer hover:text-primary transition-colors select-none font-medium"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center">
                     <span>WMO Number</span>
                     {renderSortIcon("wmo_number")}
                   </div>
                 </th>
                 <th
                   onClick={() => handleSort("profile_count")}
-                  className="px-4 py-3 cursor-pointer hover:text-white transition select-none"
+                  className="px-4 py-3 cursor-pointer hover:text-primary transition-colors select-none font-medium text-right"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center justify-end">
                     <span>Profiles Recorded</span>
                     {renderSortIcon("profile_count")}
                   </div>
                 </th>
                 <th
                   onClick={() => handleSort("min_time")}
-                  className="px-4 py-3 cursor-pointer hover:text-white transition select-none"
+                  className="px-4 py-3 cursor-pointer hover:text-primary transition-colors select-none font-medium"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center">
                     <span>First Observation</span>
                     {renderSortIcon("min_time")}
                   </div>
                 </th>
                 <th
                   onClick={() => handleSort("max_time")}
-                  className="px-4 py-3 cursor-pointer hover:text-white transition select-none"
+                  className="px-4 py-3 cursor-pointer hover:text-primary transition-colors select-none font-medium"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center">
                     <span>Latest Observation</span>
                     {renderSortIcon("max_time")}
                   </div>
                 </th>
                 {projectsRecorded && (
                   <>
-                    <th className="px-4 py-3">Project</th>
-                    <th className="px-4 py-3">Platform</th>
+                    <th className="px-4 py-3 font-medium">Project</th>
+                    <th className="px-4 py-3 font-medium">Platform</th>
                   </>
                 )}
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800 text-gray-200">
+            <tbody className="divide-y divide-subtle text-primary">
               {floats.map((f) => (
-                <tr key={f.float_id} className="hover:bg-gray-800/50 transition">
-                  <td className="px-4 py-3 font-mono font-semibold text-blue-300">
+                <tr key={f.float_id} className="hover:bg-surface-1/60 transition-colors">
+                  <td className="px-4 py-3 font-mono font-medium text-accent">
                     {f.wmo_number}
                   </td>
-                  <td className="px-4 py-3 font-semibold text-white">
+                  <td className="px-4 py-3 font-mono font-medium text-primary text-right tabular-nums">
                     {f.profile_count}
                   </td>
-                  <td className="px-4 py-3 font-mono text-gray-400">
+                  <td className="px-4 py-3 font-mono text-secondary">
                     {formatDate(f.min_time)}
                   </td>
-                  <td className="px-4 py-3 font-mono text-gray-400">
+                  <td className="px-4 py-3 font-mono text-secondary">
                     {formatDate(f.max_time)}
                   </td>
                   {projectsRecorded && (
                     <>
-                      <td className="px-4 py-3">{f.project_name || "N/A"}</td>
-                      <td className="px-4 py-3">{f.platform_type || "N/A"}</td>
+                      <td className="px-4 py-3 font-mono text-secondary">
+                        {f.project_name && f.project_name !== "N/A" ? (
+                          f.project_name
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-secondary">
+                        {f.platform_type && f.platform_type !== "N/A" ? (
+                          f.platform_type
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
                     </>
                   )}
                   <td className="px-4 py-3 text-right">
                     <button
                       onClick={() => onSelectWmo(f.wmo_number)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-600/80 hover:bg-blue-600 text-white rounded-md text-xs font-medium transition"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 bg-surface-1 hover:bg-surface-2 border border-subtle text-primary rounded-[2px] text-xs font-mono transition-colors cursor-pointer"
                     >
                       <FiList className="text-xs" />
                       <span>View Profiles</span>

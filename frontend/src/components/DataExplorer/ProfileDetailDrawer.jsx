@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Plot from "react-plotly.js";
 import { getProfileDetail, extractErrorMessage } from "../../api";
+import { useTheme } from "../../context/ThemeContext";
 import Loading from "./Loading";
 import ErrorState from "./ErrorState";
 import { FiX, FiAlertCircle } from "react-icons/fi";
@@ -20,12 +21,6 @@ const fmtDate = (iso) => (iso ? iso.replace("T", " ").slice(0, 19) : "—");
 
 /** Format a number to 4 decimal places or "—" for null */
 const fmtNum = (v, dec = 4) => (v === null || v === undefined ? "—" : Number(v).toFixed(dec));
-
-// Chart parameter configurations
-const CHART_PARAMS = [
-  { key: "temperature", label: "Temperature", unit: "°C", color: "#f97316" },
-  { key: "salinity", label: "Salinity", unit: "PSU", color: "#22d3ee" },
-];
 
 /**
  * Build a Plotly trace for a T/S vs Pressure chart.
@@ -52,7 +47,7 @@ const buildTSTrace = (measurements, param, color) => {
  * Build a Plotly trace for Pressure vs Level Index.
  * Null pressures produce gaps.
  */
-const buildLevelTrace = (measurements) => {
+const buildLevelTrace = (measurements, color) => {
   const pressure = measurements.pressure;
   if (!pressure) return null;
   const indices = pressure.map((_, i) => i);
@@ -63,27 +58,16 @@ const buildLevelTrace = (measurements) => {
     type: "scatter",
     mode: "lines+markers",
     connectgaps: false,
-    line: { color: "#a78bfa", width: 1.5 },
-    marker: { color: "#a78bfa", size: 4 },
+    line: { color, width: 1.5 },
+    marker: { color, size: 4 },
     hovertemplate: "<b>Level</b>: %{x}<br><b>Pressure</b>: %{y} dbar<extra></extra>",
   };
-};
-
-/** Shared Plotly layout base */
-const baseLayout = {
-  paper_bgcolor: "rgba(0,0,0,0)",
-  plot_bgcolor: "rgba(15,20,35,0.9)",
-  font: { color: "#BDC1CA", size: 11 },
-  margin: { l: 60, r: 20, t: 32, b: 48 },
-  xaxis: { gridcolor: "#2a3040", zerolinecolor: "#3a4050" },
-  yaxis: { gridcolor: "#2a3040", zerolinecolor: "#3a4050", autorange: "reversed" },
-  hoverlabel: { bgcolor: "#1E2128", font: { color: "#fff" } },
 };
 
 const plotConfig = { displayModeBar: false, responsive: true };
 
 /** Single T or S vs Pressure chart */
-const TSChart = ({ measurements, param, unit, color, label, rangeOn }) => {
+const TSChart = ({ measurements, param, unit, color, label, rangeOn, isDark }) => {
   const trace = buildTSTrace(measurements, param, color);
   if (!trace) return <ChartEmpty label={label} />;
 
@@ -92,20 +76,32 @@ const TSChart = ({ measurements, param, unit, color, label, rangeOn }) => {
 
   const outsideCount = rangeOn ? countOutside(measurements[param], STD_RANGE[param][0], STD_RANGE[param][1]) : 0;
 
+  const fontColor = isDark ? "#E5EDF5" : "#141C24";
+  const gridColor = isDark ? "#223344" : "#DDD7CB";
+  const zeroColor = isDark ? "#60809E" : "#786C5A";
+  const plotBg = isDark ? "rgba(17, 26, 34, 0.95)" : "rgba(250, 248, 245, 0.95)";
+  const hoverBg = isDark ? "#17232E" : "#EBE5DA";
+
   const layout = {
-    ...baseLayout,
-    title: { text: `${label} vs Pressure`, font: { color: "#e2e8f0", size: 13 } },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: plotBg,
+    font: { color: fontColor, size: 11, family: "IBM Plex Mono, monospace" },
+    margin: { l: 60, r: 20, t: 32, b: 48 },
+    title: { text: `${label} vs Pressure`, font: { color: fontColor, size: 13, family: "Chivo, sans-serif" } },
     xaxis: {
-      ...baseLayout.xaxis,
+      gridcolor: gridColor,
+      zerolinecolor: zeroColor,
       title: { text: `${label} (${unit})`, standoff: 8 },
       range: rangeOn ? STD_RANGE[param] : undefined,
       autorange: rangeOn ? false : true,
     },
     yaxis: {
-      ...baseLayout.yaxis,
+      gridcolor: gridColor,
+      zerolinecolor: zeroColor,
       title: { text: "Pressure (dbar)", standoff: 8 },
       autorange: "reversed",
     },
+    hoverlabel: { bgcolor: hoverBg, font: { color: fontColor, family: "IBM Plex Mono, monospace" } },
   };
 
   return (
@@ -118,7 +114,7 @@ const TSChart = ({ measurements, param, unit, color, label, rangeOn }) => {
         useResizeHandler
       />
       {rangeOn && (
-        <p className="text-xs text-amber-300/80 mt-1 text-center">
+        <p className="text-xs text-state-warning mt-1 text-center font-mono">
           {outsideCount} point{outsideCount !== 1 ? "s" : ""} outside standard range (
           {STD_RANGE[param][0]} – {STD_RANGE[param][1]} {unit})
         </p>
@@ -128,22 +124,34 @@ const TSChart = ({ measurements, param, unit, color, label, rangeOn }) => {
 };
 
 /** Pressure vs Level Index chart */
-const LevelChart = ({ measurements }) => {
-  const trace = buildLevelTrace(measurements);
+const LevelChart = ({ measurements, color, isDark }) => {
+  const trace = buildLevelTrace(measurements, color);
   if (!trace) return <ChartEmpty label="Pressure vs Level" />;
 
+  const fontColor = isDark ? "#E5EDF5" : "#141C24";
+  const gridColor = isDark ? "#223344" : "#DDD7CB";
+  const zeroColor = isDark ? "#60809E" : "#786C5A";
+  const plotBg = isDark ? "rgba(17, 26, 34, 0.95)" : "rgba(250, 248, 245, 0.95)";
+  const hoverBg = isDark ? "#17232E" : "#EBE5DA";
+
   const layout = {
-    ...baseLayout,
-    title: { text: "Pressure vs Level Index", font: { color: "#e2e8f0", size: 13 } },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: plotBg,
+    font: { color: fontColor, size: 11, family: "IBM Plex Mono, monospace" },
+    margin: { l: 60, r: 20, t: 32, b: 48 },
+    title: { text: "Pressure vs Level Index", font: { color: fontColor, size: 13, family: "Chivo, sans-serif" } },
     xaxis: {
-      ...baseLayout.xaxis,
+      gridcolor: gridColor,
+      zerolinecolor: zeroColor,
       title: { text: "Level Index", standoff: 8 },
     },
     yaxis: {
-      ...baseLayout.yaxis,
+      gridcolor: gridColor,
+      zerolinecolor: zeroColor,
       title: { text: "Pressure (dbar)", standoff: 8 },
       autorange: "reversed",
     },
+    hoverlabel: { bgcolor: hoverBg, font: { color: fontColor, family: "IBM Plex Mono, monospace" } },
   };
 
   return (
@@ -159,7 +167,7 @@ const LevelChart = ({ measurements }) => {
 
 /** Fallback when a chart has no data */
 const ChartEmpty = ({ label, message }) => (
-  <div className="flex items-center justify-center h-40 rounded-lg bg-gray-900/60 border border-gray-700/50 text-gray-500 text-sm">
+  <div className="flex items-center justify-center h-40 rounded-[2px] bg-surface-1 border border-subtle text-muted text-xs font-mono">
     {message || `No data for ${label}.`}
   </div>
 );
@@ -170,17 +178,17 @@ const MeasurementTable = ({ measurements }) => {
   const levels = pressure ? pressure.length : 0;
 
   return (
-    <div className="overflow-auto max-h-72 rounded-lg border border-gray-700/60">
+    <div className="overflow-auto max-h-72 rounded-[2px] border border-subtle">
       <table className="w-full text-xs text-left">
-        <thead className="sticky top-0 bg-gray-900 border-b border-gray-700 text-[#BDC1CA] uppercase tracking-wider">
+        <thead className="sticky top-0 bg-surface-1 border-b border-subtle text-secondary font-mono uppercase tracking-wider text-[11px]">
           <tr>
-            <th className="px-3 py-2">Level</th>
-            <th className="px-3 py-2">Pressure (dbar)</th>
-            <th className="px-3 py-2">Temperature (°C)</th>
-            <th className="px-3 py-2">Salinity (PSU)</th>
+            <th className="px-3 py-2 font-medium">Level</th>
+            <th className="px-3 py-2 font-medium">Pressure (dbar)</th>
+            <th className="px-3 py-2 font-medium">Temperature (°C)</th>
+            <th className="px-3 py-2 font-medium">Salinity (PSU)</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-800 text-gray-300">
+        <tbody className="divide-y divide-subtle text-primary">
           {Array.from({ length: levels }).map((_, i) => {
             const p = pressure[i];
             const t = temperature ? temperature[i] : undefined;
@@ -189,12 +197,12 @@ const MeasurementTable = ({ measurements }) => {
             return (
               <tr
                 key={i}
-                className={`hover:bg-gray-800/50 transition ${allNull ? "opacity-40" : ""}`}
+                className={`hover:bg-surface-1/60 transition-colors ${allNull ? "opacity-40" : ""}`}
               >
-                <td className="px-3 py-1.5 font-mono text-gray-400">{i}</td>
-                <td className="px-3 py-1.5 font-mono">{p === null ? "—" : fmtNum(p, 3)}</td>
-                <td className="px-3 py-1.5 font-mono">{t === null || t === undefined ? "—" : fmtNum(t, 3)}</td>
-                <td className="px-3 py-1.5 font-mono">{s === null || s === undefined ? "—" : fmtNum(s, 3)}</td>
+                <td className="px-3 py-1.5 font-mono text-muted tabular-nums">{i}</td>
+                <td className="px-3 py-1.5 font-mono tabular-nums">{p === null ? <span className="text-muted">—</span> : fmtNum(p, 3)}</td>
+                <td className="px-3 py-1.5 font-mono tabular-nums">{t === null || t === undefined ? <span className="text-muted">—</span> : fmtNum(t, 3)}</td>
+                <td className="px-3 py-1.5 font-mono tabular-nums">{s === null || s === undefined ? <span className="text-muted">—</span> : fmtNum(s, 3)}</td>
               </tr>
             );
           })}
@@ -215,18 +223,22 @@ const VIEW_MODES = [
 /**
  * ProfileDetailDrawer — slide-over panel showing profile metadata,
  * measurement table, and scientific charts.
- *
- * Props:
- *   profileId  {number|null}  — null = closed
- *   onClose    {function}     — called when user closes the drawer
  */
 const ProfileDetailDrawer = ({ profileId, onClose }) => {
+  const { isDark } = useTheme();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [viewMode, setViewMode] = useState("temperature");
   const [rangeOn, setRangeOn] = useState(false);
   const abortRef = useRef(null);
+
+  // Approved data-series colors (separate from UI accent):
+  // Light: Deck Rust #96320C, Oceanic Teal #186074, Slate #435266
+  // Dark:  Buoy Rust #E58532, Cobalt Teal #3BA7C9, Slate #8E9EAF
+  const tempColor = isDark ? "#E58532" : "#96320C";
+  const salColor = isDark ? "#3BA7C9" : "#186074";
+  const presColor = isDark ? "#8E9EAF" : "#435266";
 
   const loadProfile = useCallback(async (id) => {
     if (abortRef.current) abortRef.current.abort();
@@ -260,7 +272,9 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
 
   // Trap Escape key to close
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    const handler = (e) => {
+      if (e.key === "Escape") onClose();
+    };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
@@ -273,7 +287,7 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
     <>
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity ${
+        className={`fixed inset-0 z-40 bg-black/50 transition-opacity ${
           isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
         onClick={onClose}
@@ -282,7 +296,7 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
 
       {/* Drawer */}
       <aside
-        className={`fixed right-0 top-0 h-full z-50 w-full max-w-2xl bg-[#0d1117] border-l border-[#FF1F4B33] shadow-2xl flex flex-col transition-transform duration-300 ${
+        className={`fixed right-0 top-0 h-full z-50 w-full max-w-2xl bg-surface-0 border-l border-subtle shadow-xl flex flex-col transition-transform duration-300 ${
           isOpen ? "translate-x-0" : "translate-x-full"
         }`}
         role="dialog"
@@ -290,18 +304,18 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
         aria-label="Profile Detail"
       >
         {/* Drawer Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 bg-[#0d1117] shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-subtle bg-surface-0 shrink-0">
           <div>
-            <h2 className="text-lg font-bold text-white">Profile Detail</h2>
+            <h2 className="text-lg font-bold text-primary font-heading">Profile Detail</h2>
             {data && (
-              <p className="text-xs text-[#BDC1CA] mt-0.5">
+              <p className="text-xs text-secondary mt-0.5 font-mono">
                 WMO {data.wmo_number} · Cycle {data.cycle_number}
               </p>
             )}
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700/50 transition"
+            className="p-1.5 rounded-[2px] text-muted hover:text-primary hover:bg-surface-1 transition-colors cursor-pointer"
             aria-label="Close"
           >
             <FiX size={18} />
@@ -313,23 +327,20 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
           {loading && <Loading message="Loading profile data..." />}
 
           {error && !loading && (
-            <ErrorState
-              message={error}
-              onRetry={() => loadProfile(profileId)}
-            />
+            <ErrorState message={error} onRetry={() => loadProfile(profileId)} />
           )}
 
           {data && !loading && (
             <>
               {/* QC Warning Banner */}
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-950/40 border border-amber-700/40 text-amber-200/90 text-xs">
-                <FiAlertCircle className="text-amber-400 mt-0.5 shrink-0" size={14} />
+              <div className="flex items-start gap-2 p-3 rounded-[2px] bg-surface-1 border border-state-warning/40 text-state-warning text-xs font-mono">
+                <FiAlertCircle className="mt-0.5 shrink-0" size={14} />
                 <span>Raw, unadjusted measurements. No QC flags available.</span>
               </div>
 
               {/* Metadata */}
               <section>
-                <h3 className="text-xs font-semibold text-[#BDC1CA] uppercase tracking-wider mb-3">
+                <h3 className="text-xs font-semibold text-secondary uppercase tracking-wider mb-3 font-mono">
                   Metadata
                 </h3>
                 <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
@@ -358,11 +369,12 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
               {data.measurements && (
                 <div className="flex items-center gap-3 text-sm">
                   <button
+                    type="button"
                     role="switch"
                     aria-checked={rangeOn}
                     onClick={() => setRangeOn((v) => !v)}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-                      rangeOn ? "bg-blue-600" : "bg-gray-700"
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
+                      rangeOn ? "bg-accent" : "bg-surface-2 border border-subtle"
                     }`}
                   >
                     <span
@@ -371,7 +383,7 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
                       }`}
                     />
                   </button>
-                  <span className="text-[#BDC1CA] text-xs">
+                  <span className="text-secondary text-xs font-mono">
                     Standard range (T: −2–35 °C, S: 28–40 PSU) — display only, no points removed
                   </span>
                 </div>
@@ -380,7 +392,7 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
               {/* Measurement Table */}
               {data.measurements && (
                 <section>
-                  <h3 className="text-xs font-semibold text-[#BDC1CA] uppercase tracking-wider mb-3">
+                  <h3 className="text-xs font-semibold text-secondary uppercase tracking-wider mb-3 font-mono">
                     Measurements
                   </h3>
                   <MeasurementTable measurements={data.measurements} />
@@ -391,17 +403,18 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
               {data.measurements && (
                 <section>
                   <div className="flex flex-wrap items-center gap-2 mb-4">
-                    <h3 className="text-xs font-semibold text-[#BDC1CA] uppercase tracking-wider mr-2">
+                    <h3 className="text-xs font-semibold text-secondary uppercase tracking-wider mr-2 font-mono">
                       Charts
                     </h3>
                     {VIEW_MODES.map((m) => (
                       <button
                         key={m.id}
+                        type="button"
                         onClick={() => setViewMode(m.id)}
-                        className={`px-3 py-1 text-xs rounded-md border transition ${
+                        className={`px-3 py-1 text-xs rounded-[2px] border font-mono transition-colors cursor-pointer ${
                           viewMode === m.id
-                            ? "bg-blue-600 border-blue-500 text-white"
-                            : "bg-gray-800/60 border-gray-700 text-[#BDC1CA] hover:border-gray-500 hover:text-white"
+                            ? "bg-accent border-accent text-accent-contrast font-medium"
+                            : "bg-surface-1 border-subtle text-secondary hover:text-primary hover:bg-surface-2"
                         }`}
                       >
                         {m.label}
@@ -414,9 +427,10 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
                       measurements={data.measurements}
                       param="temperature"
                       unit="°C"
-                      color="#f97316"
+                      color={tempColor}
                       label="Temperature"
                       rangeOn={rangeOn}
+                      isDark={isDark}
                     />
                   )}
                   {viewMode === "salinity" && (
@@ -424,13 +438,18 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
                       measurements={data.measurements}
                       param="salinity"
                       unit="PSU"
-                      color="#22d3ee"
+                      color={salColor}
                       label="Salinity"
                       rangeOn={rangeOn}
+                      isDark={isDark}
                     />
                   )}
                   {viewMode === "level" && (
-                    <LevelChart measurements={data.measurements} />
+                    <LevelChart
+                      measurements={data.measurements}
+                      color={presColor}
+                      isDark={isDark}
+                    />
                   )}
                   {viewMode === "side-by-side" && (
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -438,17 +457,19 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
                         measurements={data.measurements}
                         param="temperature"
                         unit="°C"
-                        color="#f97316"
+                        color={tempColor}
                         label="Temperature"
                         rangeOn={rangeOn}
+                        isDark={isDark}
                       />
                       <TSChart
                         measurements={data.measurements}
                         param="salinity"
                         unit="PSU"
-                        color="#22d3ee"
+                        color={salColor}
                         label="Salinity"
                         rangeOn={rangeOn}
+                        isDark={isDark}
                       />
                     </div>
                   )}
@@ -465,8 +486,10 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
 /** Single metadata key-value row */
 const MetaRow = ({ label, value, mono }) => (
   <div>
-    <span className="text-[#BDC1CA] text-xs">{label}</span>
-    <p className={`text-white text-sm mt-0.5 ${mono ? "font-mono" : ""}`}>{value ?? "—"}</p>
+    <span className="text-muted text-xs font-mono">{label}</span>
+    <p className={`text-primary text-sm mt-0.5 ${mono ? "font-mono tabular-nums" : ""}`}>
+      {value ?? "—"}
+    </p>
   </div>
 );
 
@@ -480,13 +503,13 @@ const SummaryLine = ({ measurements, levelCount }) => {
   const nullCount = pressure ? pressure.filter((v) => v === null).length : 0;
 
   return (
-    <div className="text-xs text-[#BDC1CA] flex flex-wrap gap-x-4 gap-y-1 bg-gray-900/40 border border-gray-800 rounded-lg px-4 py-2.5">
-      <span>Total levels: <strong className="text-white">{total}</strong></span>
-      <span>Valid pressure: <strong className="text-white">{validP}</strong></span>
-      <span>Valid temperature: <strong className="text-white">{validT}</strong></span>
-      <span>Valid salinity: <strong className="text-white">{validS}</strong></span>
+    <div className="text-xs text-secondary flex flex-wrap gap-x-4 gap-y-1 bg-surface-1 border border-subtle rounded-[2px] px-4 py-2.5 font-mono">
+      <span>Total levels: <strong className="text-primary tabular-nums">{total}</strong></span>
+      <span>Valid pressure: <strong className="text-primary tabular-nums">{validP}</strong></span>
+      <span>Valid temperature: <strong className="text-primary tabular-nums">{validT}</strong></span>
+      <span>Valid salinity: <strong className="text-primary tabular-nums">{validS}</strong></span>
       {nullCount > 0 && (
-        <span className="text-amber-300/70">Null levels: <strong>{nullCount}</strong></span>
+        <span className="text-state-warning">Null levels: <strong className="tabular-nums">{nullCount}</strong></span>
       )}
     </div>
   );
