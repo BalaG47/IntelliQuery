@@ -11,6 +11,16 @@ from database_manager import DatabaseManager
 from query_router import ArgoQueryRouter, Route
 
 
+class ChatRetrievalError(RuntimeError):
+    """A retrieval failure, as distinct from a successful empty result.
+
+    Raised when MySQL or ChromaDB cannot be queried. Callers must not
+    translate this into a zero count or an empty list, because "the query
+    failed" and "the query matched nothing" mean different things to a
+    scientist.
+    """
+
+
 class ArgoRAG:
     """
     Retrieval-Augmented Generation backend for ARGO oceanographic data.
@@ -104,6 +114,42 @@ class ArgoRAG:
         except (TypeError, ValueError):
             return value
 
+    @staticmethod
+    def _fmt_value(value):
+        """Render a value for prose without turning missing data into zero."""
+
+        return "unavailable" if value is None else value
+
+    @staticmethod
+    def _valid_numbers(values):
+        """
+        Return only finite numeric observations from a measurement array.
+
+        Missing (``None``), non-numeric, NaN and infinite values are skipped.
+        Nothing is coerced to zero, and the input array is not modified.
+        """
+
+        numbers = []
+
+        if not values:
+            return numbers
+
+        for value in values:
+            if value is None or isinstance(value, bool):
+                continue
+
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if not math.isfinite(number):
+                continue
+
+            numbers.append(number)
+
+        return numbers
+
     # ============================================================
     # QUESTION DETECTION
     # ============================================================
@@ -161,14 +207,19 @@ class ArgoRAG:
 
     @staticmethod
     def _requested_profile_limit(question):
-        """Read an explicit 'first N' or 'top N' profile request."""
+        """Read an explicit 'first/top N' or 'latest N' profile request."""
 
         match = re.search(
-            r"\b(?:first|top)\s+(\d+)\s+profiles?\b",
+            r"\b(?:(?:first|top)\s+(\d+)\s+profiles?"
+            r"|(?:latest|newest|most recent)\s+(\d+)\s+profiles?"
+            r"|(\d+)\s+(?:latest|newest|most recent)\s+profiles?)\b",
             question.lower(),
         )
 
-        return int(match.group(1)) if match else None
+        if not match:
+            return None
+
+        return int(next(group for group in match.groups() if group))
 
     # ============================================================
     # MYSQL RETRIEVAL
@@ -214,6 +265,60 @@ class ArgoRAG:
         ]
 
         return any(phrase in q for phrase in enumeration_phrases)
+
+    @staticmethod
+    def _is_latest_request(question):
+        """Detect a request for the most recent profile(s)."""
+
+        return bool(
+            re.search(
+                r"\b(latest|most recent|newest)\b",
+                question.lower()
+            )
+        )
+
+    def _build_latest_profile_answer(
+        self, wmo_number, total_count, context_data
+    ):
+        """Describe the newest retrieved profile(s) without LLM inference."""
+
+        if len(context_data) == 1:
+            lines = [
+                f"WMO {wmo_number} has {total_count} profiles. "
+                "The most recent one is:"
+            ]
+        else:
+            lines = [
+                f"WMO {wmo_number} has {total_count} profiles. "
+                f"The {len(context_data)} most recent are shown newest first:"
+            ]
+
+        for profile in context_data:
+            summary = self._profile_summary(profile)
+            lines.append(
+                f"Cycle {summary.get('cycle_number', 'N/A')} · "
+                f"{summary.get('profile_time', 'N/A')} · "
+                f"{summary.get('latitude', 'N/A')}°N, "
+                f"{summary.get('longitude', 'N/A')}°E"
+            )
+
+        if len(context_data) == 1:
+            summary = self._profile_summary(context_data[0])
+            for name, label, unit in (
+                ("temperature", "Temperature", "°C"),
+                ("salinity", "Salinity", "PSU"),
+                ("pressure", "Pressure", "dbar"),
+            ):
+                valid = summary.get(f"{name}_valid_count", 0)
+                if valid:
+                    lines.append(
+                        f"{label}: {summary[f'{name}_min']}–"
+                        f"{summary[f'{name}_max']} {unit} "
+                        f"(mean {summary[f'{name}_mean']} {unit}, "
+                        f"{valid} valid levels)"
+                    )
+
+        return "\n".join(lines)
 
     @staticmethod
     def _is_profile_count_request(question):
@@ -265,7 +370,9 @@ class ArgoRAG:
             logging.error(
                 f"Error retrieving profile counts by WMO: {e}"
             )
-            return []
+            raise ChatRetrievalError(
+                "Profile counts could not be retrieved from the database."
+            ) from e
 
     @staticmethod
     def _build_profile_counts_answer(profile_counts):
@@ -329,7 +436,9 @@ class ArgoRAG:
             logging.error(
                 f"Error retrieving available WMO numbers: {e}"
             )
-            return []
+            raise ChatRetrievalError(
+                "The available float list could not be retrieved from the database."
+            ) from e
 
     def _build_float_enumeration_answer(self, wmo_numbers):
         """Build a concise deterministic answer for float enumeration."""
@@ -369,21 +478,41 @@ class ArgoRAG:
                 ).scalar_one())
         except Exception as e:
             logging.error(f"Error counting profiles for WMO {wmo_number}: {e}")
-            return 0
+            raise ChatRetrievalError(
+                f"The profile count for WMO {wmo_number} could not be retrieved."
+            ) from e
 
-    def _retrieve_by_wmo(self, wmo_number, limit):
+    def _retrieve_by_wmo(self, wmo_number, limit, newest_first=False):
         """
-        Retrieve chronological profiles for a specific WMO.
+        Retrieve profiles for a specific WMO.
 
         ``limit`` is intentionally explicit. General questions use a small
         context window, while an explicit list request can request all
         profiles or its own first-N window.
+
+        ``newest_first`` switches the ordering in the SQL itself so that a
+        "latest" question receives the most recent records. Rows with a
+        NULL timestamp always sort last (`(p.profile_time IS NULL)` sorts 0
+        before 1 in MySQL), so a missing date is never treated as the newest
+        observation.
         """
 
         context_data = []
 
+        # cycle_number is unique per float, so it makes equal timestamps
+        # deterministic without changing the timestamp ordering itself.
+        order_clause = (
+            "ORDER BY (p.profile_time IS NULL), p.profile_time DESC, "
+            "p.cycle_number DESC"
+            if newest_first
+            else "ORDER BY (p.profile_time IS NULL), p.profile_time ASC, "
+            "p.cycle_number ASC"
+        )
+
+        # Only the fixed ordering literal above is interpolated; every
+        # user-supplied value remains a bound parameter.
         query = text(
-            """
+            f"""
             SELECT
                 p.profile_id,
                 p.cycle_number,
@@ -399,7 +528,7 @@ class ArgoRAG:
             JOIN argo_floats f
                 ON p.float_id = f.float_id
             WHERE f.wmo_number = :wmo_number
-            ORDER BY p.profile_time
+            {order_clause}
             LIMIT :limit
             """
         )
@@ -421,6 +550,9 @@ class ArgoRAG:
             logging.error(
                 f"Error retrieving WMO {wmo_number}: {e}"
             )
+            raise ChatRetrievalError(
+                f"Profiles for WMO {wmo_number} could not be retrieved."
+            ) from e
 
         return context_data
 
@@ -448,7 +580,9 @@ class ArgoRAG:
                 ).fetchall()
         except Exception as e:
             logging.error(f"Error retrieving Arabian Sea trend: {e}")
-            return {}
+            raise ChatRetrievalError(
+                "The regional trend could not be retrieved from the database."
+            ) from e
 
         for row in rows:
             for value in self._parse_array(row.measurements):
@@ -574,7 +708,9 @@ class ArgoRAG:
                 f"Error querying ChromaDB: {e}"
             )
 
-            return []
+            raise ChatRetrievalError(
+                "Semantic profile search is currently unavailable."
+            ) from e
 
         query = text(
             """
@@ -619,6 +755,10 @@ class ArgoRAG:
                 f"Error retrieving semantic profiles: {e}"
             )
 
+            raise ChatRetrievalError(
+                "Semantic profile search could not be completed."
+            ) from e
+
         return context_data
 
     # ============================================================
@@ -629,7 +769,9 @@ class ArgoRAG:
         """
         Create a compact, factual summary of one ARGO profile.
 
-        This is generated entirely by Python.
+        This is generated entirely by Python. Statistics are computed from
+        valid numeric observations only; missing values stay missing and are
+        never converted to zero.
         """
 
         pressure = self._parse_array(
@@ -656,59 +798,30 @@ class ArgoRAG:
             "salinity_count": len(salinity),
         }
 
-        if pressure:
+        for name, values in (
+            ("pressure", pressure),
+            ("temperature", temperature),
+            ("salinity", salinity),
+        ):
+            valid = self._valid_numbers(values)
 
-            summary["pressure_first"] = (
-                self._round_number(pressure[0])
-            )
+            summary[f"{name}_valid_count"] = len(valid)
+            summary[f"{name}_missing_count"] = len(values) - len(valid)
 
-            summary["pressure_last"] = (
-                self._round_number(pressure[-1])
-            )
+            if values:
+                summary[f"{name}_first"] = self._round_number(values[0])
+                summary[f"{name}_last"] = self._round_number(values[-1])
 
-            summary["pressure_min"] = (
-                self._round_number(min(pressure))
-            )
-
-            summary["pressure_max"] = (
-                self._round_number(max(pressure))
-            )
-
-        if temperature:
-
-            summary["temperature_first"] = (
-                self._round_number(temperature[0])
-            )
-
-            summary["temperature_last"] = (
-                self._round_number(temperature[-1])
-            )
-
-            summary["temperature_min"] = (
-                self._round_number(min(temperature))
-            )
-
-            summary["temperature_max"] = (
-                self._round_number(max(temperature))
-            )
-
-        if salinity:
-
-            summary["salinity_first"] = (
-                self._round_number(salinity[0])
-            )
-
-            summary["salinity_last"] = (
-                self._round_number(salinity[-1])
-            )
-
-            summary["salinity_min"] = (
-                self._round_number(min(salinity))
-            )
-
-            summary["salinity_max"] = (
-                self._round_number(max(salinity))
-            )
+            if valid:
+                summary[f"{name}_min"] = self._round_number(min(valid))
+                summary[f"{name}_max"] = self._round_number(max(valid))
+                summary[f"{name}_mean"] = self._round_number(
+                    sum(valid) / len(valid)
+                )
+            else:
+                summary[f"{name}_min"] = None
+                summary[f"{name}_max"] = None
+                summary[f"{name}_mean"] = None
 
         return summary
 
@@ -746,15 +859,17 @@ class ArgoRAG:
 
         if variable == "temperature":
 
-            count = summary.get(
-                "temperature_count",
+            valid_count = summary.get(
+                "temperature_valid_count",
                 0
             )
 
-            if count == 0:
+            if valid_count == 0:
                 return (
-                    f"No temperature measurements were available "
-                    f"for WMO {wmo}."
+                    f"WMO {wmo} profile (cycle {cycle}) contains "
+                    f"{summary.get('temperature_count', 0)} temperature "
+                    f"levels, but none holds a valid numeric observation. "
+                    f"Temperature cannot be summarised."
                 )
 
             first_pressure = summary.get(
@@ -777,87 +892,108 @@ class ArgoRAG:
                 "N/A"
             )
 
-            minimum = summary.get(
-                "temperature_min",
-                "N/A"
-            )
+            minimum = summary.get("temperature_min")
+            maximum = summary.get("temperature_max")
+            mean = summary.get("temperature_mean")
+            missing = summary.get("temperature_missing_count", 0)
 
-            maximum = summary.get(
-                "temperature_max",
-                "N/A"
+            missing_note = (
+                f" {missing} of "
+                f"{summary.get('temperature_count', 0)} levels "
+                f"have no observation."
+                if missing
+                else ""
             )
 
             return (
                 f"Float WMO {wmo}, Cycle {cycle}, "
                 f"profile time {profile_time}, contains "
-                f"{count} temperature measurements.\n\n"
-                f"Temperature range: {minimum} to {maximum}.\n"
+                f"{valid_count} valid temperature measurements."
+                f"{missing_note}\n\n"
+                f"Temperature range: {minimum} to {maximum} °C "
+                f"(mean {mean} °C).\n"
                 f"First recorded pair: pressure "
-                f"{first_pressure}, temperature {first_temp}.\n"
+                f"{self._fmt_value(first_pressure)}, temperature "
+                f"{self._fmt_value(first_temp)}.\n"
                 f"Last recorded pair: pressure "
-                f"{last_pressure}, temperature {last_temp}.\n\n"
+                f"{self._fmt_value(last_pressure)}, temperature "
+                f"{self._fmt_value(last_temp)}.\n\n"
                 f"The complete measurement data is available "
                 f"to the visualization layer."
             )
 
         if variable == "salinity":
 
-            count = summary.get(
-                "salinity_count",
+            valid_count = summary.get(
+                "salinity_valid_count",
                 0
             )
 
-            if count == 0:
+            if valid_count == 0:
                 return (
-                    f"No salinity measurements were available "
-                    f"for WMO {wmo}."
+                    f"WMO {wmo} profile (cycle {cycle}) contains "
+                    f"{summary.get('salinity_count', 0)} salinity "
+                    f"levels, but none holds a valid numeric observation. "
+                    f"Salinity cannot be summarised."
                 )
 
-            minimum = summary.get(
-                "salinity_min",
-                "N/A"
-            )
+            minimum = summary.get("salinity_min")
+            maximum = summary.get("salinity_max")
+            mean = summary.get("salinity_mean")
+            missing = summary.get("salinity_missing_count", 0)
 
-            maximum = summary.get(
-                "salinity_max",
-                "N/A"
+            missing_note = (
+                f" {missing} of "
+                f"{summary.get('salinity_count', 0)} levels "
+                f"have no observation."
+                if missing
+                else ""
             )
 
             return (
                 f"Float WMO {wmo}, Cycle {cycle}, "
                 f"profile time {profile_time}, contains "
-                f"{count} salinity measurements.\n\n"
-                f"Salinity range: {minimum} to {maximum}."
+                f"{valid_count} valid salinity measurements."
+                f"{missing_note}\n\n"
+                f"Salinity range: {minimum} to {maximum} PSU "
+                f"(mean {mean} PSU)."
             )
 
         if variable == "pressure":
 
-            count = summary.get(
-                "pressure_count",
+            valid_count = summary.get(
+                "pressure_valid_count",
                 0
             )
 
-            if count == 0:
+            if valid_count == 0:
                 return (
-                    f"No pressure measurements were available "
-                    f"for WMO {wmo}."
+                    f"WMO {wmo} profile (cycle {cycle}) contains "
+                    f"{summary.get('pressure_count', 0)} pressure "
+                    f"levels, but none holds a valid numeric observation. "
+                    f"Pressure cannot be summarised."
                 )
 
-            minimum = summary.get(
-                "pressure_min",
-                "N/A"
-            )
+            minimum = summary.get("pressure_min")
+            maximum = summary.get("pressure_max")
+            mean = summary.get("pressure_mean")
+            missing = summary.get("pressure_missing_count", 0)
 
-            maximum = summary.get(
-                "pressure_max",
-                "N/A"
+            missing_note = (
+                f" {missing} of "
+                f"{summary.get('pressure_count', 0)} levels "
+                f"have no observation."
+                if missing
+                else ""
             )
 
             return (
                 f"Float WMO {wmo}, Cycle {cycle}, "
                 f"profile time {profile_time}, contains "
-                f"{count} pressure measurements.\n\n"
-                f"Pressure range: {minimum} to {maximum}."
+                f"{valid_count} valid pressure measurements."
+                f"{missing_note}\n\n"
+                f"Pressure range: {minimum} to {maximum} dbar "
+                f"(mean {mean} dbar)."
             )
 
         return None
@@ -915,34 +1051,30 @@ class ArgoRAG:
                 f"{summary.get('longitude', 'N/A')}"
             )
 
-            if summary.get("temperature_count", 0) > 0:
-                context_lines.append(
-                    f"Temperature measurements: {summary['temperature_count']} "
-                    f"(unit: degrees Celsius)"
-                )
-                context_lines.append(
-                    f"Temperature range: {summary['temperature_min']} to "
-                    f"{summary['temperature_max']} degrees Celsius"
-                )
+            for name, label, unit in (
+                ("temperature", "Temperature", "degrees Celsius"),
+                ("salinity", "Salinity", "PSU"),
+                ("pressure", "Pressure", "dbar"),
+            ):
+                valid = summary.get(f"{name}_valid_count", 0)
 
-            if summary.get("salinity_count", 0) > 0:
-                context_lines.append(
-                    f"Salinity measurements: {summary['salinity_count']} "
-                    f"(unit: PSU)"
-                )
-                context_lines.append(
-                    f"Salinity range: {summary['salinity_min']} to "
-                    f"{summary['salinity_max']} PSU"
-                )
+                if not valid:
+                    context_lines.append(
+                        f"No valid {label.lower()} measurements are "
+                        f"available for this profile "
+                        f"({summary.get(f'{name}_count', 0)} levels, all missing)."
+                    )
+                    continue
 
-            if summary.get("pressure_count", 0) > 0:
                 context_lines.append(
-                    f"Pressure measurements: {summary['pressure_count']} "
-                    f"(unit: dbar)"
+                    f"Valid {label.lower()} measurements: {valid} of "
+                    f"{summary.get(f'{name}_count', 0)} levels "
+                    f"(unit: {unit})"
                 )
                 context_lines.append(
-                    f"Pressure range: {summary['pressure_min']} to "
-                    f"{summary['pressure_max']} dbar"
+                    f"{label} range: {summary[f'{name}_min']} to "
+                    f"{summary[f'{name}_max']} {unit} "
+                    f"(mean {summary.get(f'{name}_mean')} {unit})"
                 )
             context_lines.append("")
 
@@ -1133,6 +1265,26 @@ ANSWER:
             logging.info(
                 f"Detected WMO number: {wmo_number}"
             )
+
+            if self._is_latest_request(question):
+                total_count = self._count_profiles_by_wmo(wmo_number)
+                latest_limit = self._requested_profile_limit(question) or 1
+                context_data = self._retrieve_by_wmo(
+                    wmo_number, latest_limit, newest_first=True
+                )
+
+                if not context_data:
+                    return (
+                        f"I couldn't find any profiles for WMO number {wmo_number}.",
+                        [],
+                    )
+
+                return (
+                    self._build_latest_profile_answer(
+                        wmo_number, total_count, context_data
+                    ),
+                    context_data,
+                )
 
             if self._is_profile_list_request(question):
                 total_count = self._count_profiles_by_wmo(wmo_number)

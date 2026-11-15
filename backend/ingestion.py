@@ -1,3 +1,4 @@
+import logging
 import os
 import werkzeug
 
@@ -7,7 +8,7 @@ from flask_restful import Resource, Api, reqparse
 
 from database_manager import DatabaseManager
 from data_processor import ArgoDataProcessor
-from llmbackend import ArgoRAG
+from llmbackend import ArgoRAG, ChatRetrievalError
 from explorer_api import create_explorer_blueprint
 
 
@@ -168,10 +169,25 @@ def query():
             "data": context_data
         })
 
-    except Exception as e:
+    except ChatRetrievalError as e:
+
+        logging.error(f"Chat retrieval failed: {e}")
 
         return jsonify({
-            "error": f"An error occurred while processing the question: {str(e)}"
+            "error": "The ARGO data service could not complete this query. "
+                     "This is a retrieval failure, not an empty result; "
+                     "please try again."
+        }), 503
+
+    except Exception:
+
+        # Full detail is logged server-side only. SQL, credentials and
+        # internal paths are never returned to the browser.
+        logging.exception("Chat query failed")
+
+        return jsonify({
+            "error": "The question could not be processed due to an "
+                     "internal error."
         }), 500
 
 

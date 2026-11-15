@@ -63,7 +63,11 @@ const ChatWindow = ({ onFirstMessage }) => {
         ...prev,
         {
           sender: "ai",
-          text: "⚠️ Error fetching response from server.",
+          // A retrieval failure is shown as an error, never as an empty result.
+          text: `⚠️ ${
+            error?.response?.data?.error ||
+            "Error fetching response from server."
+          }`,
           data: [],
           timestamp: new Date().toLocaleTimeString([], {
             hour: "2-digit",
