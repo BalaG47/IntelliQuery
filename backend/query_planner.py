@@ -680,8 +680,12 @@ def _plan_aggregate(spec: QuerySpec) -> QueryPlan:
             GroupBy.PROFILE: "p.profile_id",
         }
         group_expression = group_expressions[spec.group_by]
-        limit = _limit_value(spec)
-        params["limit"] = limit
+        # A grouped count returns every group unless the request states a
+        # limit: the list default (5) would truncate the distribution and
+        # make its total wrong.
+        limit = _limit_value(spec) if spec.limit is not None else None
+        if limit is not None:
+            params["limit"] = limit
         sql = (
             f"SELECT {group_expression} AS group_key, "
             "COUNT(*) AS profile_count "
@@ -689,8 +693,8 @@ def _plan_aggregate(spec: QuerySpec) -> QueryPlan:
             "JOIN argo_floats f ON p.float_id = f.float_id "
             f"{_where(clauses)} "
             f"GROUP BY {group_expression} "
-            "ORDER BY group_key ASC "
-            "LIMIT :limit"
+            "ORDER BY group_key ASC"
+            + (" LIMIT :limit" if limit is not None else "")
         )
         return QueryPlan(
             operation=PlanOperation.COUNT_PROFILES,

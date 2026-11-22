@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Iterable
 
@@ -47,6 +48,16 @@ class EvaluationRecord:
     deterministic_field_differences: tuple[str, ...]
     clarification_correct: bool | None
     plan_supported: bool | None
+    qwen_raw_response: str | None = None
+    qwen_json_parse_ok: bool | None = None
+    qwen_json_error: str | None = None
+    qwen_decoder_accepted: bool | None = None
+    qwen_decoder_error_code: str | None = None
+    qwen_decoder_error_message: str | None = None
+    qwen_rejected_field: str | None = None
+    qwen_expected_type: str | None = None
+    qwen_candidate_spec: dict | None = None
+    qwen_validation_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,11 +67,14 @@ class EvaluationRun:
     generation_options: dict
     total_cases: int
     records: tuple[EvaluationRecord, ...]
+    generation_mode: str = "json"
 
 
 def _json_value(value):
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, datetime):
+        return value.isoformat()
     if isinstance(value, dict):
         return {key: _json_value(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -68,6 +82,13 @@ def _json_value(value):
     if isinstance(value, (frozenset, set)):
         return sorted(_json_value(item) for item in value)
     return value
+
+
+def _candidate_spec(interpretation) -> dict | None:
+    spec = interpretation.candidate_spec or interpretation.validation.spec
+    if spec is None:
+        return None
+    return _json_value(asdict(spec))
 
 
 def _expected_fields(case: ParserCase) -> dict:
@@ -169,6 +190,7 @@ def evaluate_case(
         if spec is not None:
             plan_supported = plan_query(spec).supported
 
+    telemetry = qwen.telemetry
     return EvaluationRecord(
         case_id=_case_id(case),
         query=case.query,
@@ -189,6 +211,18 @@ def evaluate_case(
         deterministic_field_differences=deterministic_differences,
         clarification_correct=clarification_correct,
         plan_supported=plan_supported,
+        qwen_raw_response=None if telemetry is None else telemetry.raw_response,
+        qwen_json_parse_ok=None if telemetry is None else telemetry.json_parse_ok,
+        qwen_json_error=None if telemetry is None else telemetry.json_error,
+        qwen_decoder_accepted=None if telemetry is None else telemetry.decoder_accepted,
+        qwen_decoder_error_code=None if telemetry is None else telemetry.decoder_error_code,
+        qwen_decoder_error_message=(
+            None if telemetry is None else telemetry.decoder_error_message
+        ),
+        qwen_rejected_field=None if telemetry is None else telemetry.rejected_field,
+        qwen_expected_type=None if telemetry is None else telemetry.expected_type,
+        qwen_candidate_spec=_candidate_spec(qwen),
+        qwen_validation_reason=qwen.validation.reason,
     )
 
 
@@ -220,6 +254,7 @@ def evaluate_corpus(
         generation_options=dict(qwen_interpreter.generation_options),
         total_cases=len(records),
         records=records,
+        generation_mode=getattr(qwen_interpreter, "generation_mode", "json"),
     )
 
 
@@ -357,6 +392,7 @@ def run_to_dict(run: EvaluationRun) -> dict:
         "model_name": run.model_name,
         "prompt_version": run.prompt_version,
         "generation_options": run.generation_options,
+        "generation_mode": run.generation_mode,
         "total_cases": run.total_cases,
         "summary": summarise(run.records),
         "records": [asdict(record) for record in run.records],
@@ -368,14 +404,20 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--constrained",
+        action="store_true",
+        help="send the QuerySpec JSON Schema through Ollama's format parameter",
+    )
     args = parser.parse_args()
 
-    interpreter = QwenInterpreter()
+    interpreter = QwenInterpreter(constrained=args.constrained)
     if not interpreter.is_available():
         result = {
             "error": "ollama_or_qwen3_unavailable",
             "model_name": interpreter.model,
             "prompt_version": PROMPT_VERSION,
+            "generation_mode": interpreter.generation_mode,
             "message": (
                 "Ollama/Qwen3 is not available; no model evaluation was run. "
                 "Install/start Ollama and pull the model, then rerun."
@@ -392,7 +434,7 @@ def main() -> int:
     else:
         print(
             f"model={payload['model_name']} prompt={payload['prompt_version']} "
-            f"cases={payload['total_cases']}"
+            f"mode={payload['generation_mode']} cases={payload['total_cases']}"
         )
         print(json.dumps(payload["summary"], indent=2))
     return 0

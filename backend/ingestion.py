@@ -8,11 +8,20 @@ from flask_restful import Resource, Api, reqparse
 
 from database_manager import DatabaseManager
 from data_processor import ArgoDataProcessor
+from conversation_context import extract_context, merge_followup
 from llmbackend import ArgoRAG, ChatRetrievalError
 from explorer_api import create_explorer_blueprint
 
 
 NC_STORAGE_PATH = "data"
+
+# The application records routing and retrieval decisions with
+# ``logging.info``. Without a configured level those records are dropped, so
+# the routing trail is enabled here (Phase 4B).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 app = Flask(__name__)
 api = Api(app)
@@ -159,14 +168,37 @@ def query():
                 "error": "No prompt was provided."
             }), 400
 
-        # Run the actual RAG pipeline
-        response, context_data = (
-            rag_chatbot.answer_question(user_query)
+        # Phase 4D: a validated filter object from the previous structured
+        # answer lets a follow-up replace or add a constraint.  The merged
+        # question is parsed and validated again, so context can never inject
+        # SQL or bypass the supported-query boundary.
+        followup = merge_followup(data.get("context"), user_query)
+
+        if followup is not None and followup.clarification:
+
+            return jsonify({
+                "response": followup.clarification,
+                "data": [],
+                "context": data.get("context")
+            })
+
+        effective_query = (
+            followup.question
+            if followup is not None and followup.question
+            else user_query
         )
 
+        # Run the actual RAG pipeline
+        response, context_data = (
+            rag_chatbot.answer_question(effective_query)
+        )
+
+        # Only structured filters survive to the next turn; a semantic or
+        # conversational answer resets the context instead of leaking it.
         return jsonify({
             "response": response,
-            "data": context_data
+            "data": context_data,
+            "context": extract_context(effective_query)
         })
 
     except ChatRetrievalError as e:

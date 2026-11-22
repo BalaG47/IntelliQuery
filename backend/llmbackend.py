@@ -8,6 +8,11 @@ import streamlit as st
 from sqlalchemy import text
 
 from database_manager import DatabaseManager
+from query_integration import (
+    DeterministicPipelineError,
+    answer_deterministically,
+    has_structured_refinement,
+)
 from query_router import ArgoQueryRouter, Route
 
 
@@ -212,7 +217,8 @@ class ArgoRAG:
         match = re.search(
             r"\b(?:(?:first|top)\s+(\d+)\s+profiles?"
             r"|(?:latest|newest|most recent)\s+(\d+)\s+profiles?"
-            r"|(\d+)\s+(?:latest|newest|most recent)\s+profiles?)\b",
+            r"|(\d+)\s+(?:latest|newest|most recent)\s+profiles?"
+            r"|(\d+)\s+profiles?)\b",
             question.lower(),
         )
 
@@ -762,6 +768,146 @@ class ArgoRAG:
         return context_data
 
     # ============================================================
+    # SEMANTIC-ANSWER SAFEGUARDS (Phase 4D)
+    # ============================================================
+
+    #: Analysis-shaped requests the current application cannot execute.
+    #: Retrieval + Qwen must not be presented as if the analysis had run.
+    _ANALYSIS_REQUESTS = (
+        (
+            r"\b(?:most|least)\s+(?:anomalous|unusual|abnormal|extreme|"
+            r"suspicious)\b|\brank(?:ing|ed)?\b",
+            "rank floats or profiles by anomalous measurements",
+        ),
+        (
+            r"\banomal(?:y|ies|ous)\b|\bsuspicious\b|\bunusual(?:ly)?\b|"
+            r"\bstrangely\b|\boddly\b|\boutliers?\b",
+            "detect statistically anomalous or unusual profiles",
+        ),
+        (
+            r"\b(?:higher|lower|warmer|colder|saltier|fresher)\s+than\b|"
+            r"\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b",
+            "compare regions, floats or time periods",
+        ),
+        (
+            r"\b(?:trend|climate change|seasonal|seasonality|patterns?)\b",
+            "calculate trends, seasonal behaviour or recurring patterns",
+        ),
+        (
+            r"\binstrument errors?|\bsensor errors?|\bmalfunction\w*\b|"
+            r"\bcalibration errors?\b",
+            "identify instrument, sensor or calibration errors",
+        ),
+        (
+            r"\b(?:average|mean|maximum|minimum)\b",
+            "calculate a dataset-wide statistic",
+        ),
+        (
+            r"\b(?:statistically|statistical significance|significant "
+            r"difference|correlat\w*|caus(?:e|ed|ation)|relationship|"
+            r"relate[sd]?|how variable|variability)\b",
+            "run a statistical or causal analysis",
+        ),
+        (
+            r"\bdataset[- ]wide\b|\bhow variable\b|"
+            r"\bsummar(?:y|ise|ize)\b[^?]{0,30}\bdataset\b",
+            "calculate dataset-wide statistics",
+        ),
+    )
+
+    def _unsupported_analysis_answer(self, question):
+        """Return an explicit limitation for analysis the app cannot run.
+
+        ``None`` means the question is an ordinary discovery request and the
+        existing retrieval workflow may answer it.  This method never touches
+        the database and never calls the language model.
+        """
+
+        text = " ".join(question.lower().split())
+
+        for pattern, operation in self._ANALYSIS_REQUESTS:
+
+            if re.search(pattern, text):
+
+                return (
+                    f"I cannot {operation} from the stored profile "
+                    "metadata: that analysis is not implemented, and I will "
+                    "not present a few retrieved profiles as if it had been "
+                    "performed. I can list profiles that contain a "
+                    "parameter, show profile metadata for a WMO number or "
+                    "cycle, or report profile counts.",
+                    [],
+                )
+
+        return None
+
+    def _float_distribution_limitation(self, question):
+        """A per-year/month float count is not a plain float enumeration.
+
+        Phase 4E: "how many floats were active each year" reached the float
+        enumeration route and was answered with the total float list, which
+        is a different question.  Counting distinct floats per period is not
+        implemented, so it is stated instead of silently substituted.
+        """
+
+        text = " ".join(question.lower().split())
+
+        if re.search(
+            r"\b(?:each|per|every)\s+(?:year|month)\b|"
+            r"\b(?:yearly|monthly|annually)\b",
+            text,
+        ):
+            return (
+                "I can list the floats present in the dataset, but counting "
+                "how many distinct floats were active per year or month is "
+                "not implemented. I can report the total number of floats, "
+                "the profiles for one WMO number, or the profile count per "
+                "year.",
+                [],
+            )
+
+        return None
+
+    def _orphan_removal_clarification(self, question):
+        """"Remove the temperature filter" with nothing to remove.
+
+        Without a previous structured answer there is no filter to remove;
+        answering with temperature profiles would invert the request.
+        """
+
+        text = " ".join(question.lower().split()).strip(" ?.!")
+
+        if re.match(
+            r"^(?:please\s+)?(?:remove|drop|clear)\s+(?:the\s+)?"
+            r"(?:temperature|salinity|pressure|oxygen|chlorophyll|nitrate|"
+            r"ph|date|year|time|cycles?|data[\s-]?mode)\b",
+            text,
+        ):
+            return (
+                "There is no earlier filter in this conversation to remove. "
+                "State the filter you want (for example 'show profiles "
+                "containing salinity'), or ask this after a filtered question.",
+                [],
+            )
+
+        return None
+
+    def _contextless_count_clarification(self, question):
+        """A bare count must not be answered with the retrieval sample size."""
+
+        text = " ".join(question.lower().split()).strip(" ?.!")
+
+        if text in {"how many", "how many are there", "how many profiles", "count them"}:
+            return (
+                "How many of what? Ask, for example, 'how many profiles are "
+                "there?', 'how many floats are there?' or 'how many delayed "
+                "profiles are there?'.",
+                [],
+            )
+
+        return None
+
+    # ============================================================
     # NUMERICAL PROFILE PROCESSING
     # ============================================================
 
@@ -1078,6 +1224,46 @@ class ArgoRAG:
                 )
             context_lines.append("")
 
+        notes = []
+
+        for index, profile in enumerate(context_data, start=1):
+
+            summary = self._profile_summary(profile)
+            issues = []
+
+            salinity_min = summary.get("salinity_min")
+            salinity_max = summary.get("salinity_max")
+            if salinity_min is not None and salinity_min < 30:
+                issues.append(f"salinity as low as {salinity_min} PSU")
+            if salinity_max is not None and salinity_max > 40:
+                issues.append(f"salinity as high as {salinity_max} PSU")
+
+            temperature_min = summary.get("temperature_min")
+            temperature_max = summary.get("temperature_max")
+            if temperature_min is not None and temperature_min < -2:
+                issues.append(f"temperature as low as {temperature_min} C")
+            if temperature_max is not None and temperature_max > 40:
+                issues.append(f"temperature as high as {temperature_max} C")
+
+            pressure_min = summary.get("pressure_min")
+            if pressure_min is not None and pressure_min < 0:
+                issues.append(f"negative pressure {pressure_min} dbar")
+
+            if issues:
+                notes.append(
+                    f"Profile {index} contains values outside the usual "
+                    f"oceanographic range ({', '.join(issues)})."
+                )
+
+        if notes:
+            context_lines.append(
+                "DATA-QUALITY NOTE (computed by the application, not the "
+                "language model): these are raw ARGO measurements. "
+                + " ".join(notes)
+                + " Treat them as unvalidated and possibly implausible; do "
+                "not present them as normal ocean conditions."
+            )
+
         return "\n".join(context_lines)
 
     # ============================================================
@@ -1139,6 +1325,39 @@ IMPORTANT:
 12. The numerical values in the context were calculated or
     retrieved by the application. Do not modify them.
 
+13. Do not generalise from the retrieved examples to the whole
+    dataset, a region, a season or a time period.
+
+14. Pressure is measured in dbar. Never describe a pressure value
+    as shallow, near-surface, surface or deep, and never convert
+    pressure to depth. Never write phrases such as 'shallow
+    depth', 'near-surface pressure' or 'deep pressure'. Describe
+    pressure only as a number of dbar.
+
+15. These are raw ARGO measurements. Do not describe them as
+    scientifically validated or quality controlled unless the
+    context explicitly says so.
+
+16. If a value looks physically implausible (salinity far outside
+    30-40 PSU, temperature outside -2 to 40 C, negative
+    pressure), say that it appears implausible or unvalidated and
+    do not interpret it as normal ocean conditions.
+
+17. Do not claim that data passed quality control when QC
+    information is not in the context.
+
+18. State how many profiles the context contains when making any
+    statement about them.
+
+19. If the question asks for a comparison, ranking, anomaly,
+    trend, seasonal pattern or instrument error that the context
+    cannot establish, say it cannot be determined from the
+    retrieved examples.
+
+The retrieved context contains {len(context_data)} profile summaries. They are
+examples selected by similarity, NOT a statistically representative sample of
+the dataset.
+
 RETRIEVED FACTUAL CONTEXT:
 
 {compact_context}
@@ -1149,6 +1368,73 @@ USER QUESTION:
 
 ANSWER:
 """
+
+    # ============================================================
+    # DETERMINISTIC QUERYSPEC PIPELINE (Phase 4B)
+    # ============================================================
+
+    def _answer_with_query_spec(self, question, strict=False):
+        """Try the deterministic QuerySpec pipeline for a structured question.
+
+        Returns ``None`` when the question is outside the deterministic
+        pipeline's supported scope, in which case the existing semantic
+        retrieval and Qwen answer generation run unchanged.  The pipeline is
+        executed at most once, and only when it can actually plan the query,
+        so falling back never repeats a database execution.
+
+        ``strict`` asks for an explicit statement when a detected constraint
+        cannot be applied, instead of an answer that quietly ignores it.
+        """
+
+        try:
+            outcome = answer_deterministically(
+                question,
+                self.db_manager.mysql_engine,
+                strict=strict,
+            )
+        except DeterministicPipelineError as exc:
+            logging.error(
+                "Deterministic QuerySpec execution failed: %s",
+                type(exc).__name__,
+            )
+            raise ChatRetrievalError(
+                "The structured query could not be executed; no result was "
+                "produced."
+            ) from exc
+
+        if outcome is None:
+            logging.info(
+                "Deterministic QuerySpec pipeline did not handle the "
+                "question; using the existing route."
+            )
+
+        return outcome
+
+    def _answer_wmo_refinement(self, question):
+        """Answer a WMO question that carries another structured constraint.
+
+        Returns ``(answer, data)`` when the question has such a constraint, and
+        ``None`` for a bare identifier lookup, which the existing WMO route
+        keeps answering.  A constraint the pipeline cannot apply is reported
+        explicitly rather than dropped.
+        """
+
+        if not has_structured_refinement(question):
+            return None
+
+        outcome = self._answer_with_query_spec(question, strict=True)
+
+        if outcome is None:
+            return None
+
+        logging.info(
+            "Answered WMO refinement via the deterministic QuerySpec "
+            "pipeline (status=%s, rows=%d).",
+            outcome.status,
+            len(outcome.rows),
+        )
+
+        return outcome.answer, list(outcome.rows)
 
     # ============================================================
     # MAIN RAG PIPELINE
@@ -1171,6 +1457,23 @@ ANSWER:
         logging.info(
             f"Received question: {question}"
         )
+
+        count_clarification = self._contextless_count_clarification(question)
+
+        if count_clarification is not None:
+            logging.info(
+                "Clarified a context-free count instead of "
+                "reporting a retrieval sample size."
+            )
+            return count_clarification
+
+        orphan_removal = self._orphan_removal_clarification(question)
+
+        if orphan_removal is not None:
+            logging.info(
+                "Clarified a filter removal with no earlier context."
+            )
+            return orphan_removal
 
         context_data = []
         decision = ArgoQueryRouter.route(question)
@@ -1225,6 +1528,13 @@ ANSWER:
             )
 
         if decision.route is Route.MYSQL_WMO_PROFILE_COUNT:
+
+            # A count question may also carry filters (date, parameter, ...)
+            # that this exact route cannot express.
+            refined = self._answer_wmo_refinement(question)
+            if refined is not None:
+                return refined
+
             count = self._count_profiles_by_wmo(decision.wmo_number)
             return (f"WMO {decision.wmo_number} contains {count} profiles.", [])
 
@@ -1239,6 +1549,14 @@ ANSWER:
             )
 
         if decision.route is Route.MYSQL_FLOAT_ENUMERATION:
+
+            distribution = self._float_distribution_limitation(question)
+            if distribution is not None:
+                logging.info(
+                    "Refused a per-period float count instead of "
+                    "answering with the total float list."
+                )
+                return distribution
 
             wmo_numbers = self._retrieve_available_wmos()
 
@@ -1259,6 +1577,13 @@ ANSWER:
         # 2. Named float (MySQL) or semantic discovery (ChromaDB)
         # --------------------------------------------------------
         if decision.route is Route.MYSQL_WMO:
+
+            # The legacy branch understands the identifier, "latest" and an
+            # explicit N only.  Any other constraint must be answered exactly
+            # or refused, never silently dropped.
+            refined = self._answer_wmo_refinement(question)
+            if refined is not None:
+                return refined
 
             wmo_number = decision.wmo_number
 
@@ -1316,6 +1641,52 @@ ANSWER:
                 )
 
         else:
+
+            # Phase 4B: structured questions the deterministic pipeline can
+            # answer exactly are handled here, before semantic retrieval.
+            # A structured constraint the planner cannot execute must be
+            # refused here, not handed to ChromaDB/Qwen3 where the answer can
+            # imply the filter was applied.
+            deterministic = self._answer_with_query_spec(
+                question, strict=has_structured_refinement(question)
+            )
+
+            # Phase 4D: a question that asks for analysis the application
+            # cannot compute must not reach retrieval, where a few unrelated
+            # profiles would look like an answer.
+            #
+            # Phase 4E: the guard is computed before the deterministic answer
+            # is returned.  "Detect anomalies in the salinity data" parses as
+            # a valid parameter list, so answering it deterministically
+            # produced "Found 5 profiles matching the request" and the guard
+            # below never ran.  An explicit refusal still outranks the guard,
+            # because it names the unsupported operation more precisely.
+            guard = self._unsupported_analysis_answer(question)
+
+            if deterministic is not None and not (
+                guard is not None and deterministic.status == "executed"
+            ):
+
+                logging.info(
+                    "Answered via the deterministic QuerySpec pipeline "
+                    "(status=%s, rows=%d).",
+                    deterministic.status,
+                    len(deterministic.rows),
+                )
+
+                return (
+                    deterministic.answer,
+                    list(deterministic.rows)
+                )
+
+            if guard is not None:
+
+                logging.info(
+                    "Refused analysis-shaped question explicitly "
+                    "instead of substituting retrieved examples."
+                )
+
+                return guard
 
             context_data = self._retrieve_semantic(
                 question

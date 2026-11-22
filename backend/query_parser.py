@@ -59,6 +59,7 @@ Known deliberate limitations
 
 from __future__ import annotations
 
+import calendar
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -68,6 +69,7 @@ from query_spec import (
     Aggregation,
     BoundingBox,
     DataMode,
+    GroupBy,
     Intent,
     MeasurementValues,
     Parameter,
@@ -200,7 +202,7 @@ _PARAMETER_ALIASES = (
     (Parameter.TEMP, r"\btemperatures?\b|\bthermal\b"),
     (Parameter.PSAL, r"\bsalinit(?:y|ies)\b"),
     (Parameter.PRES, r"\bpressures?\b"),
-    (Parameter.DOXY, r"\bdissolved oxygen\b|\boxygen\b"),
+    (Parameter.DOXY, r"\bdissolved oxygen\b|\boxygen\b|\bdoxy\b"),
     (Parameter.CHLA, r"\bchlorophyll(?:-?a)?\b|\bchl-?a\b"),
     (
         Parameter.BBP700,
@@ -268,6 +270,12 @@ _GOOD_QUALITY_PATTERNS = (
     r"\bgood quality\b",
     r"\bacceptable (?:quality|qc)\b",
     r"\bhigh[- ]quality\b",
+    # "acceptable temperature QC" / "good salinity QC": the scope word may sit
+    # between the qualifier and "QC", so adjacency is not required here.
+    r"\b(?:acceptable|good|high)\b[^.;]{0,24}\bqc\b",
+    # "temperature quality is good" names the scope before the verdict.
+    r"\b(?:temperature|salinity|pressure)\s+quality\s+(?:is\s+)?"
+    r"(?:good|acceptable|high)\b",
 )
 
 _QC_FLAG_PATTERNS = (
@@ -308,7 +316,8 @@ _WMO_CUE_AFTER = 2
 #: Ends the cycle clause before an unrelated filter introducer begins.
 _CYCLE_CLAUSE_STOP = re.compile(
     r"\b(?:for|with|where|from|between|at|in|during|of|on|having|sorted|order|"
-    r"year|years|since|after|before|until)\b"
+    r"year|years|since|after|before|until|within|inside|located|latitude|"
+    r"longitude|lat|lon)\b"
     r"|[.?!]"
 )
 
@@ -392,6 +401,7 @@ class _Extraction:
     values: MeasurementValues = MeasurementValues.RAW
     values_explicit: bool = False
     aggregations: list[Aggregation] = field(default_factory=list)
+    group_by: GroupBy | None = None
     sort_field: SortField | None = None
     sort_direction: SortDirection | None = None
     limit: int | None = None
@@ -467,6 +477,21 @@ def _extract_wmos(text: str, ex: _Extraction) -> None:
             ignored.append(value)
 
     ex.wmo_numbers = seen
+
+    if not seen:
+        # A cued identifier with fewer than seven digits cannot be a WMO, and
+        # guessing one would query the wrong float.  Ask instead.
+        short_identifier = re.search(
+            r"\b(?:wmo|float|platform)\s*(?:id|ids|number|numbers)?\s*"
+            r"(\d{1,6})\b",
+            text,
+        )
+        if short_identifier:
+            ex.ambiguities.append(
+                "ARGO WMO identifiers have seven digits (for example "
+                "'WMO 1900121'). Please check the identifier."
+            )
+
     if seen:
         ex.diagnostics.append(
             "explicitly identified WMO identifier(s): "
@@ -533,13 +558,17 @@ _NUMERIC_FILTER_PATTERNS = (
 #: first matching expression is protected, so a second range or an extra year
 #: is not absorbed by an earlier date filter.
 _DATE_SPAN_PATTERNS = (
+    r"\b(?:from|between)?\s*(?:jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|"
+    r"aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\s+\d{4}\s+"
+    r"(?:and|to|through|until)\s+(?:jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|"
+    r"jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\s+\d{4}\b",
     r"\b(?:from|between)\s+\d{4}-\d{2}-\d{2}\s+(?:to|and|until)\s+\d{4}-\d{2}-\d{2}\b",
     r"\b(?:on)\s+\d{4}-\d{2}-\d{2}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b(?:from|between)\s+(?:jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\s+(?:and|to)\s+(?:jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\s+\d{4}\b",
     r"\b(?:from|between)\s+\d{4}\s+(?:to|and|until)\s+\d{4}\b",
-    r"\b(?:since|after)\s+\d{4}\b",
-    r"\b(?:before|until|up to)\s+\d{4}\b",
+    r"\b(?:since|after|later than)\s+\d{4}\b",
+    r"\b(?:before|until|up to|earlier than|prior to)\s+\d{4}\b",
     r"\b(?:in|during|for|of)\s+\d{4}\b",
     r"\b(?:19|20)\d{2}\b",
 )
@@ -605,6 +634,8 @@ def _scan_cycle_expression(text: str):
     stop = _CYCLE_CLAUSE_STOP.search(rest)
     clause = (rest[: stop.start()] if stop else rest).strip()
     clause = re.sub(r"^range\b", "", clause).strip()
+    # "cycle number 25" names the same filter as "cycle 25".
+    clause = re.sub(r"^number\b", "", clause).strip()
 
     # "highest cycle" / "lowest cycle" are sort wording, not a filter.
     if not re.search(r"\d", clause):
@@ -689,6 +720,14 @@ def _extract_cycles(text: str, ex: _Extraction) -> None:
         return
 
     if not values:
+        # A cued but incomplete cycle request ("... and cycle") must not be
+        # treated as no constraint: the legacy route would return every
+        # profile for the float as if the cycle filter had been applied.
+        if re.search(r"\b(?:and|with|for)\s+cycles?\s*[.?!]*$", text):
+            ex.ambiguities.append(
+                "The cycle number is missing after 'cycle'; give a cycle "
+                "number (for example 'cycle 25')."
+            )
         return
 
     if kind == "range":
@@ -713,12 +752,47 @@ def _extract_cycles(text: str, ex: _Extraction) -> None:
     ex.note("cycle numbers: " + ", ".join(str(value) for value in ex.cycles))
 
 
+_MONTH_PATTERN = (
+    r"(jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|"
+    r"nov\w*|dec\w*)"
+)
+
+
+def _month_number(token: str) -> int | None:
+    return _MONTHS.get(token[:3], _MONTHS.get(token))
+
+
+def _month_bounds(year: int, month: int) -> TimeRange:
+    """Whole-month range, with the inclusive last day of the month."""
+
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+    return TimeRange(
+        start=datetime(year, month, 1),
+        end=datetime.combine(last_day, time.max),
+    )
+
+
 def _extract_dates(text: str, ex: _Extraction) -> None:
     iso = r"(\d{4})-(\d{2})-(\d{2})"
 
     if re.search(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", text):
         ex.ambiguities.append(
             "The numeric date format is ambiguous; use YYYY-MM-DD or a year."
+        )
+        return
+
+    # A range introducer with no second bound ("between 2023 and") must be a
+    # clarification, never silently completed as the whole year.
+    if re.search(
+        r"\b(?:between|from)\s+(?:\d{4}|"
+        r"(?:jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|"
+        r"oct\w*|nov\w*|dec\w*)\s+\d{4})\s+"
+        r"(?:and|to|through|until)\s*[.?!]*$",
+        text,
+    ):
+        ex.ambiguities.append(
+            "The date range is incomplete; give both bounds (for example "
+            "'between 2023 and 2024')."
         )
         return
 
@@ -748,6 +822,29 @@ def _extract_dates(text: str, ex: _Extraction) -> None:
             ex.note(f"time range: {start.date().isoformat()}")
         return
 
+    # Month + year ranges ("January 2023 to December 2024").  Both years are
+    # explicit, so this must be read before any single-year interpretation:
+    # treating it as one year would silently narrow the requested range.
+    match = re.search(
+        rf"(?:\b(?:from|between)\s+)?{_MONTH_PATTERN}\s+(\d{{4}})\s+"
+        rf"(?:and|to|through|until)\s+{_MONTH_PATTERN}\s+(\d{{4}})\b",
+        text,
+    )
+    if match:
+        start_month = _month_number(match.group(1))
+        end_month = _month_number(match.group(3))
+        start_year, end_year = int(match.group(2)), int(match.group(4))
+        if start_month and end_month:
+            bounds = _month_bounds(end_year, end_month)
+            ex.time_range = TimeRange(
+                start=datetime(start_year, start_month, 1), end=bounds.end
+            )
+            ex.note(
+                f"time range: {ex.time_range.start.date().isoformat()} to "
+                f"{bounds.end.date().isoformat()}"
+            )
+            return
+
     match = re.search(
         r"\b(?:from|between)\s+(jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|"
         r"aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\s+(?:and|to)\s+"
@@ -767,6 +864,20 @@ def _extract_dates(text: str, ex: _Extraction) -> None:
             ex.note(f"time range: {start.date()} to {end.date()}")
             return
 
+    # A single month with its year ("from December 2023") is that whole month,
+    # not the whole calendar year.
+    match = re.search(rf"\b{_MONTH_PATTERN}\s+(\d{{4}})\b", text)
+    if match:
+        month = _month_number(match.group(1))
+        year = int(match.group(2))
+        if month:
+            ex.time_range = _month_bounds(year, month)
+            ex.note(
+                f"time range: {ex.time_range.start.date().isoformat()} to "
+                f"{ex.time_range.end.date().isoformat()}"
+            )
+            return
+
     match = re.search(r"\b(?:from|between)\s+(\d{4})\s+(?:to|and|until)\s+(\d{4})\b", text)
     if match:
         start_year, end_year = int(match.group(1)), int(match.group(2))
@@ -777,19 +888,25 @@ def _extract_dates(text: str, ex: _Extraction) -> None:
         ex.note(f"time range: {start_year} to {end_year}")
         return
 
-    match = re.search(r"\b(?:since|after)\s+(\d{4})\b", text)
+    match = re.search(
+        r"\b(?:since|after|later than)\s+(\d{4})\b", text
+    )
     if match:
         year = int(match.group(1))
         ex.time_range = TimeRange(start=datetime(year, 1, 1))
         ex.note(f"time range: since {year}")
         return
 
-    match = re.search(r"\b(?:before|until|up to)\s+(\d{4})\b", text)
+    match = re.search(
+        r"\b(?:before|until|up to|earlier than|prior to)\s+(\d{4})\b", text
+    )
     if match:
         year = int(match.group(1))
         end = (
             datetime.combine(date(year - 1, 12, 31), time.max)
-            if text[match.start() :].startswith(("before", "up to"))
+            if text[match.start() :].startswith(
+                ("before", "up to", "earlier than", "prior to")
+            )
             else datetime.combine(date(year, 12, 31), time.max)
         )
         ex.time_range = TimeRange(end=end)
@@ -1156,6 +1273,21 @@ def _parse_flag_list(raw: str) -> list[str]:
 def _extract_qc(text: str, ex: _Extraction) -> None:
     good_quality = _matches(text, _GOOD_QUALITY_PATTERNS)
 
+    # An explicitly scoped measurement-level flag ("measurement-level QC 1")
+    # must be recorded as that filter, not dropped: the planner will refuse it
+    # rather than answer as though the filter had been applied.
+    measurement_flag = re.search(
+        r"\b(?:measurement|measurement[- ]level|level)\s*qc\s*([0-9a-f])\b",
+        text,
+    )
+    if measurement_flag:
+        ex.qc_filter = QcFilter(
+            scope=QcScope.MEASUREMENT,
+            flags=frozenset({measurement_flag.group(1).upper()}),
+        )
+        ex.note("measurement-level QC flag")
+        return
+
     # 1. Explicit profile category ("profile QC category A").
     category = re.search(r"\b(?:profile\s*qc|qc\s*category)\s*([a-f])\b", text)
     if category:
@@ -1256,6 +1388,46 @@ def _extract_values(text: str, ex: _Extraction) -> None:
         ex.note("raw measurements requested")
 
 
+#: A comparison applied to measured *values*.  QuerySpec can filter whether a
+#: profile contains a parameter, never the magnitude of its measurements, so a
+#: value condition must be reported instead of becoming a presence filter.
+_VALUE_COMPARISON_PATTERNS = (
+    r"\b(?:values?|readings?|measurements?|concentrations?|levels?)\b"
+    r"[^.;]{0,20}?\b(?:between|above|below|over|under|greater than|less than|"
+    r"more than|at least|at most|higher than|lower than)\b[^.;]{0,20}?\d",
+    r"\b(?:temperature|salinity|dissolved oxygen|oxygen|chlorophyll(?:-?a)?|"
+    r"nitrate|ph|backscatter)\b[^.;]{0,30}?"
+    r"\b(?:between|above|below|over|under|greater than|less than|more than|"
+    r"at least|at most|higher than|lower than)\b[^.;]{0,20}?"
+    r"\d+(?:\.\d+)?\s*(?:degrees?|deg\b|psu|umol|\u00b5mol|mg/m3|ml/l)",
+)
+
+#: The comparison belongs to another, separately handled filter (pressure,
+#: depth, coordinates, QC, a date or an identifier) when one of these appears
+#: in the matched phrase.
+_VALUE_COMPARISON_EXCLUSIONS = (
+    r"\b(?:pressure|depth|dbar|decibar|metres?|meters?|latitude|longitude|"
+    r"cycle|wmo|km|year|date|qc|quality)\b|\d{4}-\d{2}-\d{2}"
+)
+
+
+def _extract_measurement_values(text: str, ex: _Extraction) -> None:
+    """Report a measurement-value comparison the validator cannot execute."""
+
+    for pattern in _VALUE_COMPARISON_PATTERNS:
+        for match in re.finditer(pattern, text):
+            if re.search(_VALUE_COMPARISON_EXCLUSIONS, match.group(0)):
+                continue
+            ex.ambiguities.append(
+                "ARGO parameters can be filtered by availability, not by "
+                "their measured values. Ask which profiles contain the "
+                "parameter (for example 'profiles containing temperature'), "
+                "or ask a discovery question about the measurements."
+            )
+            ex.note("measurement-value comparison requested (not executable)")
+            return
+
+
 def _extract_aggregations(text: str, ex: _Extraction) -> None:
     for word in _UNSUPPORTED_AGGREGATIONS:
         if re.search(rf"\b{re.escape(word)}\b", text):
@@ -1278,6 +1450,124 @@ def _extract_aggregations(text: str, ex: _Extraction) -> None:
         )
 
 
+def _extract_grouping(text: str, ex: _Extraction) -> None:
+    """Recognise a grouped profile count, or refuse the dimension.
+
+    Grouping is meaningful only together with a count; the planner executes
+    YEAR/MONTH/WMO/PROFILE with a deterministic GROUP BY.  Dimensions the
+    QuerySpec does not model (data mode, parameter) are reported instead of
+    being dropped.
+    """
+
+    count_cue = bool(
+        re.search(r"\b(?:how many|number of|count of|profile count)\b", text)
+    )
+    grouped_cue = bool(
+        re.search(r"\b(?:grouped|group)\s+by\b", text)
+    )
+
+    if not count_cue and not grouped_cue:
+        return
+
+    if re.search(
+        r"\b(?:by|per|each|every)\s+(?:data\s*[-_ ]?mode|mode)\b", text
+    ):
+        ex.ambiguities.append(
+            "Grouping by data mode is not supported. Ask for the total count "
+            "with a data-mode filter (for example 'how many delayed-mode "
+            "profiles are there?')."
+        )
+        return
+
+    if re.search(
+        r"\b(?:by|per|each|every)\s+(?:parameter|variable)\b", text
+    ):
+        ex.ambiguities.append(
+            "Grouping by parameter is not supported. Ask about one parameter "
+            "at a time (for example 'how many profiles contain oxygen?')."
+        )
+        return
+
+    if not count_cue:
+        ex.ambiguities.append(
+            "Grouping is supported only for profile counts. Ask 'how many "
+            "profiles ... per year' instead of grouping a profile list."
+        )
+        return
+
+    if re.search(r"\b(?:each|every|per|by)\s+year\b|\byearly\b|\bannual\b", text):
+        ex.group_by = GroupBy.YEAR
+    elif re.search(r"\b(?:each|every|per|by)\s+month\b|\bmonthly\b", text):
+        ex.group_by = GroupBy.MONTH
+    elif re.search(
+        r"\b(?:each|every|per|by)\s+(?:float|wmo|platform)\b", text
+    ):
+        ex.group_by = GroupBy.WMO
+    else:
+        return
+
+    if Aggregation.COUNT not in ex.aggregations:
+        ex.aggregations.append(Aggregation.COUNT)
+    ex.note(f"grouped count by {ex.group_by.value}")
+
+
+def _extract_qualitative_conditions(text: str, ex: _Extraction) -> None:
+    """Report a condition QuerySpec cannot represent, instead of dropping it.
+
+    Phase 4C found that "near the equator with high salinity" became a broad
+    list of recent profiles while claiming to match.  Neither the equatorial
+    band nor a measured-value adjective exists in QuerySpec, so both must
+    clarify here.  Analysis-shaped questions ("unusually low salinity",
+    "suspicious temperature") are left to the semantic safeguards, which
+    refuse them explicitly.
+    """
+
+    if re.search(
+        r"\b(?:unusual|unusually|anomalous|abnormal|suspicious|extreme|odd|"
+        r"strange|weird|interesting|typical|representative)\b",
+        text,
+    ):
+        return
+
+    if re.search(
+        r"\b(?:sudden|sharp|abrupt)\s+(?:drops?|rises?|changes?)\b|"
+        r"\b(?:dropped|drops|rose|rises|increased|decreased|spiked|jumped|"
+        r"fell|changed)\s+(?:suddenly|sharply|dramatically|abruptly)\b",
+        text,
+    ):
+        ex.ambiguities.append(
+            "A change between measurements cannot be filtered. ARGO parameters "
+            "can be filtered by availability, not by how their values vary. "
+            "Ask which profiles contain the parameter instead."
+        )
+        ex.note("measured-value change condition requested")
+        return
+
+    if re.search(
+        r"\b(?:near|around|close to)\s+(?:the\s+)?equator\b|\bequatorial\b",
+        text,
+    ):
+        ex.ambiguities.append(
+            "'Near the equator' has no stored boundary. Give an explicit "
+            "latitude range (for example 'latitude -5 and 5')."
+        )
+        ex.note("undefined equatorial band requested")
+        return
+
+    if re.search(
+        r"\b(?:very\s+)?(?:high|low|higher|lower|elevated|reduced)\s+"
+        r"(?:salinity|temperature|oxygen|chlorophyll(?:-?a)?|nitrate|ph)\b",
+        text,
+    ):
+        ex.ambiguities.append(
+            "ARGO parameters can be filtered by availability, not by their "
+            "measured values. Ask which profiles contain the parameter (for "
+            "example 'profiles containing salinity'), or give an explicit "
+            "numeric comparison."
+        )
+        ex.note("qualitative measured-value condition requested")
+
+
 def _extract_sort_and_limit(text: str, ex: _Extraction) -> None:
     word = _LIMIT_WORD
     limit_match = re.search(
@@ -1289,13 +1579,56 @@ def _extract_sort_and_limit(text: str, ex: _Extraction) -> None:
         raw = limit_match.group(1)
         ex.limit = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
         ex.note(f"result limit: {ex.limit}")
-    elif re.search(r"\b(?:latest|newest|most recent|oldest|earliest)\s+profile\b", text):
-        ex.limit = 1
-        ex.note("result limit: 1 (single latest/earliest profile)")
+    else:
+        # "List 10 profiles" states the same limit without a superlative.
+        list_limit = re.search(
+            rf"\b(?:list|show|give|display)\s+(?:me\s+)?(\d{{1,3}})\s+"
+            r"(?:profiles?|records?)\b",
+            text,
+        )
+        if list_limit:
+            ex.limit = int(list_limit.group(1))
+            ex.note(f"result limit: {ex.limit}")
+        elif re.search(
+            r"\b(?:latest|newest|most recent|oldest|earliest)\s+profile\b", text
+        ):
+            ex.limit = 1
+            ex.note("result limit: 1 (single latest/earliest profile)")
+
+    # Phase 4E: "sort them by cycle" / "order those profiles by time" put an
+    # object between the verb and "by"; ignoring it silently dropped the sort.
+    sort_object = (
+        r"(?:\s+(?:them|these|those|it|"
+        r"the\s+(?:profiles?|results?|records?)))?\s*"
+    )
+
+    if re.search(
+        r"\b(?:sort(?:ed)?|order)" + sort_object + r"(?:by|on)\s+"
+        r"(?:temperature|salinity|oxygen|pressure|depth|chlorophyll|nitrate|ph)\b",
+        text,
+    ):
+        ex.ambiguities.append(
+            "Sorting by measured values or depth is not supported. Profiles "
+            "can be ordered by profile time, cycle number, WMO number, "
+            "latitude or longitude."
+        )
+        ex.note("unsupported sort field requested")
+
+    sorted_by_cycle = re.search(
+        r"\b(?:sort(?:ed)?|order)" + sort_object + r"(?:by|on)\s+cycle(?:\s+number)?\b",
+        text,
+    )
 
     if re.search(r"\bhighest cycle\b|\blargest cycle\b|\bmost recent cycle\b", text):
         ex.sort_field = SortField.CYCLE_NUMBER
         ex.sort_direction = SortDirection.DESC
+    elif sorted_by_cycle:
+        ex.sort_field = SortField.CYCLE_NUMBER
+        ex.sort_direction = (
+            SortDirection.DESC
+            if re.search(r"\bdesc(?:ending)?\b", text)
+            else SortDirection.ASC
+        )
     elif re.search(r"\blowest cycle\b|\bsmallest cycle\b|\bfirst cycle\b", text):
         ex.sort_field = SortField.CYCLE_NUMBER
         ex.sort_direction = SortDirection.ASC
@@ -1342,6 +1675,31 @@ Precedence (first match wins, each rule requires explicit evidence):
 """
 
 
+#: A parameter qualified by a qualitative adjective is a discovery question:
+#: QuerySpec can only ask whether the parameter is present, which is not what
+#: the user asked.  The list is deliberately short and English-only; it is a
+#: routing hint, not a claim that the adjective was interpreted.
+_QUALITATIVE_PARAMETER_PATTERNS = (
+    r"\b(?:unusual|unusually|abnormal|anomalous|extreme|odd|strange|weird|"
+    r"interesting|typical|representative|suspicious|notable|remarkable|"
+    r"significant|sharp)\b(?:\s+(?:low|high|lowest|highest|cold|warm|salty|"
+    r"fresh|elevated|reduced|very|extremely|slightly))?[\s-]{0,2}"
+    r"(?:temperature|salinity|oxygen|"
+    r"chlorophyll(?:-?a)?|nitrate|ph|backscatter)",
+    r"\b(?:temperature|salinity|oxygen|chlorophyll(?:-?a)?|nitrate|ph|"
+    r"backscatter)[\s-]*(?:rich|poor|depleted|anomalies?|anomaly)\b",
+)
+
+
+#: A request to explain or summarise needs semantic analysis, not a
+#: presence filter: "explain the distribution of oxygen" is not "show
+#: profiles containing oxygen".  Only used when no structured filter is given.
+_ANALYSIS_PATTERNS = (
+    r"\b(?:explain|describe|distribution|overview|summar(?:y|ise|ize)|trend|"
+    r"patterns?|analyse|analyze|interpret|characteri[sz]e)\b",
+)
+
+
 def _is_compare(text: str) -> bool:
     return _matches(text, _COMPARE_PATTERNS)
 
@@ -1356,15 +1714,44 @@ def _detect_intent(text: str, ex: _Extraction) -> Intent:
     if _is_compare(text):
         return Intent.COMPARE
 
+    if ex.group_by is not None:
+        return Intent.AGGREGATE
+
+    if ex.parameters and _matches(text, _QUALITATIVE_PARAMETER_PATTERNS):
+        return Intent.SEMANTIC_DISCOVERY
+
+    if (
+        _matches(text, _ANALYSIS_PATTERNS)
+        and not (
+            ex.time_range
+            or ex.bbox
+            or ex.cycles
+            or ex.qc_filter
+            or ex.data_mode
+            or ex.wmo_numbers
+            or ex.pressure_range
+        )
+    ):
+        return Intent.SEMANTIC_DISCOVERY
+
     if (
         ex.parameters
         and not re.search(r"\bqc\b|\bquality\b", text)
         and (
             re.search(
-                r"\b(?:which|what)\s+(?:floats?|profiles?)\s+(?:have|contain|include)",
+                r"\b(?:which|what)\s+(?:floats?|profiles?)\s+(?:have|contain|include)\b",
                 text,
             )
-            or re.search(r"\b(?:floats?|profiles?)\s+(?:with|containing)\b", text)
+            # Presence is only meant when the parameter itself follows the
+            # cue ("profiles with salinity"), not when it is qualified by an
+            # adjective the parser does not interpret.
+            or re.search(
+                r"\b(?:floats?|profiles?)\s+(?:with|containing)\s+"
+                r"(?:any\s+|all\s+|both\s+|the\s+)?(?:measured\s+)?"
+                r"(?:temperature|salinit(?:y|ies)|pressure|oxygen|"
+                r"chlorophyll(?:-?a)?|nitrate|ph|backscatter)\b",
+                text,
+            )
         )
     ):
         return Intent.PARAMETER_AVAILABILITY
@@ -1400,9 +1787,11 @@ def _detect_intent(text: str, ex: _Extraction) -> Intent:
         ):
             return Intent.LIST_PROFILES
         # Several filters turn the request into a list even when a WMO is
-        # present; a bare parameter + WMO remains a detail request.
+        # present; a bare parameter + WMO remains a detail request.  Several
+        # distinct WMOs also describe a list, not one profile.
         if (
-            ex.time_range
+            len(ex.wmo_numbers) > 1
+            or ex.time_range
             or ex.bbox
             or ex.radius
             or ex.qc_filter
@@ -1508,8 +1897,11 @@ def parse_query(user_text: str) -> ParsedQuery:
     _extract_qc(text, ex)
     _extract_data_mode(text, ex)
     _extract_values(text, ex)
+    _extract_measurement_values(text, ex)
     _extract_aggregations(text, ex)
+    _extract_grouping(text, ex)
     _extract_sort_and_limit(text, ex)
+    _extract_qualitative_conditions(text, ex)
 
     intent = _detect_intent(text, ex)
 
@@ -1557,6 +1949,7 @@ def parse_query(user_text: str) -> ParsedQuery:
         data_mode=ex.data_mode,
         values=ex.values,
         aggregations=tuple(ex.aggregations),
+        group_by=ex.group_by,
         sort=sort,
         limit=ex.limit,
         semantic_query=text if intent is Intent.SEMANTIC_DISCOVERY else None,

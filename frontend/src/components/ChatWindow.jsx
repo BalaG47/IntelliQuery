@@ -14,6 +14,9 @@ const ChatWindow = ({ onFirstMessage }) => {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  // Structured filters from the previous turn. The backend returns this
+  // object; sending it back lets follow-ups replace or add a constraint.
+  const contextRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -43,7 +46,10 @@ const ChatWindow = ({ onFirstMessage }) => {
     try {
       const res = await axios.post("http://localhost:5000/get-question", {
         prompt: currentInput,
+        context: contextRef.current,
       });
+
+      contextRef.current = res.data.context || null;
 
       const aiMessage = {
         sender: "ai",
@@ -58,6 +64,10 @@ const ChatWindow = ({ onFirstMessage }) => {
       setMessages((prev) => [...prev, aiMessage]);
     } catch (error) {
       console.error("Error fetching response:", error);
+
+      // No response was produced, so there is no new filter state to carry:
+      // clear it rather than merging the next follow-up into an older turn.
+      contextRef.current = null;
 
       setMessages((prev) => [
         ...prev,
