@@ -3,14 +3,19 @@ import chromadb
 import ollama
 import json
 from decimal import Decimal
+
+from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
  
 # --- MySQL connection ---
 def run_mysql_query(query):
+    # Credentials come from the environment (see backend/.env.example); this
+    # module is a legacy experimental script and is not imported by the app.
     conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="shyam123",
-            database="argo_ocean_data")
+            host=DB_HOST,
+            port=int(DB_PORT),
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME)
     cursor = conn.cursor(dictionary=True)
 
     try:

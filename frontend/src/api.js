@@ -1,5 +1,7 @@
 import axios from "axios";
 
+// All backend calls go through this one value. Set VITE_API_BASE_URL in
+// frontend/.env (see frontend/.env.example) to point at another host or port.
 export const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 
 const apiClient = axios.create({
@@ -20,7 +22,7 @@ export const extractErrorMessage = (error) => {
   }
   if (error.request) {
     // The request was made but no response was received
-    return "Cannot reach backend server. Please verify the Flask backend is running on http://localhost:5000.";
+    return `Cannot reach the backend server at ${BASE_URL}. Please verify the Flask backend is running.`;
   }
   return error.message || "An unknown error occurred.";
 };

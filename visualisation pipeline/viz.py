@@ -2,14 +2,23 @@ import mysql.connector
 import chromadb
 import ollama
 import json
+import os
 from decimal import Decimal
- 
+
+# Credentials come from the environment; no password is hard-coded.
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+
 # --- MySQL connection ---
 def run_mysql_query(query):
+    if not DB_PASSWORD:
+        return {"error": "DB_PASSWORD is not set", "query": query}
+
     conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="shyam123",
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
             database="sales_db")
     cursor = conn.cursor(dictionary=True)
 

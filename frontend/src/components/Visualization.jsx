@@ -43,7 +43,7 @@ const Visualization = () => {
     labels: ["Jul 2019", "Jul 2020", "Jul 2021", "Jul 2022", "Jul 2023", "Jul 2024"],
     datasets: [
       {
-        label: "Temperature Anomaly (°C)",
+        label: "Temperature Anomaly (°C) — illustrative",
         data: [0.5, 0.7, 0.8, 0.85, 0.95, 1.1],
         borderColor: seriesColor,
         backgroundColor: seriesBg,
@@ -70,7 +70,7 @@ const Visualization = () => {
       },
       title: {
         display: true,
-        text: "Global Sea Surface Temperature Anomaly (2019-2024)",
+        text: "Global Sea Surface Temperature Anomaly (2019-2024) — Illustrative",
         color: textColor,
         font: { family: "Chivo, sans-serif", size: 13, weight: "bold" },
         padding: { top: 4, bottom: 12 },
@@ -100,15 +100,26 @@ const Visualization = () => {
   return (
     <div ref={containerRef} className="space-y-4 w-full">
       {/* Line Chart Panel */}
-      <div className="bg-surface-0 border border-subtle rounded-[3px] p-3 text-primary" style={{ height: "280px" }}>
-        <Line data={lineData} options={lineOptions} />
+      <div
+        className="bg-surface-0 border border-subtle rounded-[3px] p-3 text-primary flex flex-col"
+        style={{ height: "280px" }}
+      >
+        <div className="flex items-center justify-between gap-2 mb-1 text-[10px] font-mono uppercase text-muted shrink-0">
+          <span>Temperature anomaly overview</span>
+          <span className="px-1.5 py-0.5 rounded-[2px] border border-subtle bg-surface-1 text-state-warning">
+            Illustrative · demo data
+          </span>
+        </div>
+        <div className="flex-1 min-h-0">
+          <Line data={lineData} options={lineOptions} />
+        </div>
       </div>
 
       {/* 3D Globe Instrument Panel */}
       <div className="bg-surface-0 border border-subtle rounded-[3px] overflow-hidden p-2 flex flex-col items-center justify-center" style={{ height: "360px", width: "100%" }}>
         <div className="w-full flex items-center justify-between px-2 mb-1 text-[10px] font-mono uppercase text-muted">
           <span>Global Sphere Projection</span>
-          <span className="text-accent">ARGO Floats Orbit</span>
+          <span className="text-state-warning">Illustrative · no live positions</span>
         </div>
         {width > 0 && (
           <Globe
@@ -120,6 +131,14 @@ const Visualization = () => {
           />
         )}
       </div>
+
+      {/* Source note — keeps the static panels from reading as live results */}
+      <p className="text-[11px] leading-relaxed text-muted font-mono px-1">
+        Illustrative panel: the anomaly series above and the globe are static
+        demonstration graphics. They are not calculated from the ARGO
+        database and must not be read as scientific findings. Live,
+        database-derived values are shown in the Data Explorer.
+      </p>
     </div>
   );
 };

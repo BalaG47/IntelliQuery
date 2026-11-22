@@ -14,6 +14,10 @@
 !/backend/
 !/visualisation pipeline/
 
+# Root-level documentation (submission README, report, demonstration plan)
+!/README.md
+!/docs/
+
 # Floatchat monorepo-level ignores
 # Python runtime and virtual environments
 **/__pycache__/

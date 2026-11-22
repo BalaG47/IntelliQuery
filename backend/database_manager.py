@@ -2,6 +2,8 @@ import chromadb
 import json
 import logging
 
+from urllib.parse import quote_plus
+
 from sqlalchemy import create_engine, text
 from sentence_transformers import SentenceTransformer
 
@@ -12,8 +14,23 @@ from config import (
     DB_PORT,
     DB_NAME,
     CHROMA_PERSIST_DIR,
-    CHROMA_COLLECTION_NAME
+    CHROMA_COLLECTION_NAME,
+    require_database_config
 )
+
+
+def _redact(message):
+    """
+    Removes the configured password from a message before it is logged.
+
+    SQLAlchemy includes the full connection URL in some connection errors, so
+    a failure to connect must never be logged verbatim.
+    """
+
+    if DB_PASSWORD and DB_PASSWORD in message:
+        return message.replace(DB_PASSWORD, "***")
+
+    return message
 
 
 class DatabaseManager:
@@ -57,10 +74,14 @@ class DatabaseManager:
         Establishes a connection to the MySQL database.
         """
 
+        # Fails with an explicit ConfigurationError when DB_USER, DB_PASSWORD
+        # or DB_NAME is missing, instead of attempting a default credential.
+        require_database_config()
+
         try:
             connection_url = (
                 f"mysql+mysqlconnector://"
-                f"{DB_USER}:{DB_PASSWORD}@"
+                f"{quote_plus(DB_USER)}:{quote_plus(DB_PASSWORD)}@"
                 f"{DB_HOST}:{DB_PORT}/{DB_NAME}"
             )
 
@@ -74,10 +95,12 @@ class DatabaseManager:
             return engine
 
         except Exception as e:
-            logging.error(f"Failed to connect to MySQL: {e}")
             logging.error(
-                "Please ensure MySQL is running and connection details "
-                "are correct."
+                f"Failed to connect to MySQL: {_redact(str(e))}"
+            )
+            logging.error(
+                "Please ensure MySQL is running and that DB_HOST, DB_PORT and "
+                "DB_NAME in backend/.env are correct."
             )
             raise
 

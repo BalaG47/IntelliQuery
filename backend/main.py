@@ -3,7 +3,11 @@ import logging
 import warnings
 
 # Import configurations and classes from other files
-from config import ARGO_DATA_DIR, DB_USER, DB_PASSWORD
+from config import (
+    ARGO_DATA_DIR,
+    ConfigurationError,
+    require_database_config,
+)
 from database_manager import DatabaseManager
 from data_processor import ArgoDataProcessor
 
@@ -20,14 +24,19 @@ def main():
     logging.info("Starting ARGO Data Ingestion Pipeline.")
     
     # --- Pre-run Checks ---
-    if not os.path.isdir(ARGO_DATA_DIR) or ARGO_DATA_DIR == 'path/to/your/argo_data_folder':
-        logging.error("The ARGO_DATA_DIR is not set or does not exist.")
-        logging.error("Please update the 'ARGO_DATA_DIR' variable in 'config.py'.")
+    if not os.path.isdir(ARGO_DATA_DIR):
+        logging.error(
+            "ARGO_DATA_DIR does not exist: %s", ARGO_DATA_DIR
+        )
+        logging.error(
+            "Set ARGO_DATA_DIR in backend/.env (see backend/.env.example)."
+        )
         return
 
-    if DB_USER == 'your_mysql_user' or DB_PASSWORD == 'your_mysql_password':
-        logging.error("Default MySQL credentials are being used.")
-        logging.error("Please update the DB_USER and DB_PASSWORD variables in 'config.py'.")
+    try:
+        require_database_config()
+    except ConfigurationError as config_error:
+        logging.error(str(config_error))
         return
         
     # --- Pipeline Execution ---

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
+import { BASE_URL } from "../api";
 import ReactMarkdown from "react-markdown";
 import { FiSend } from "react-icons/fi";
 
@@ -44,7 +45,7 @@ const ChatWindow = ({ onFirstMessage }) => {
     setLoading(true);
 
     try {
-      const res = await axios.post("http://localhost:5000/get-question", {
+      const res = await axios.post(`${BASE_URL}/get-question`, {
         prompt: currentInput,
         context: contextRef.current,
       });

@@ -1,10 +1,24 @@
+import os
+import sys
+
 import mysql.connector
+
+# Credentials come from the environment; no password is hard-coded.
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+
+if not DB_PASSWORD:
+    sys.exit(
+        "Set DB_PASSWORD (and optionally DB_USER / DB_HOST) before running "
+        "this script."
+    )
 
 # Connect to MySQL server
 conn = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="shyam123"  # change if needed
+    host=DB_HOST,
+    user=DB_USER,
+    password=DB_PASSWORD
 )
 cursor = conn.cursor()
 
