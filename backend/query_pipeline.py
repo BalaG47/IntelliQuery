@@ -15,9 +15,15 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from bgc_calculations import (
+    QC_POLICY_ALL_FINITE,
+    QC_POLICY_GOOD_ONLY,
+    calculate_bgc_statistics,
+    filter_rows_by_bgc_threshold,
+)
 from query_parser import ParsedQuery, parse_query
 from query_planner import QueryPlan, execute_spec, plan_query
-from query_spec import ValidationStatus
+from query_spec import DEFAULT_LIST_LIMIT, MAX_RESULT_LIMIT, ValidationStatus
 
 
 class PipelineStatus(str, Enum):
@@ -183,11 +189,76 @@ def run_pipeline(question: str, engine=None, capabilities=None) -> PipelineResul
             error="Query execution failed; no result was produced.",
         )
 
+    rows = list(executed["rows"])
+    if plan.post_processing:
+        qc_policy = (
+            QC_POLICY_GOOD_ONLY
+            if spec.qc_filter is not None
+            else QC_POLICY_ALL_FINITE
+        )
+        values_mode = spec.values.value
+        if "bgc_numeric_filter" in plan.post_processing and spec.numeric_filter is not None:
+            nf = spec.numeric_filter
+            rows = filter_rows_by_bgc_threshold(
+                rows,
+                nf.parameter,
+                nf.operator.value,
+                nf.value,
+                nf.upper_value,
+                scope=nf.scope,
+                aggregation=nf.aggregation.value if nf.aggregation else None,
+                values_mode=values_mode,
+                qc_policy=qc_policy,
+            )
+            limit = spec.limit if spec.limit is not None else (
+                MAX_RESULT_LIMIT if nf.scope == "float" else DEFAULT_LIST_LIMIT
+            )
+            rows = rows[:limit]
+        elif "bgc_compare" in plan.post_processing:
+            # Per-profile (or per-WMO if multiple WMOs) comparison results.
+            limit = spec.limit if spec.limit is not None else DEFAULT_LIST_LIMIT
+            comp_rows = []
+            for r in rows[:limit]:
+                for param in spec.parameters:
+                    calc = calculate_bgc_statistics(
+                        [r],
+                        param,
+                        scope="profile",
+                        aggregation_type="COMPARE",
+                        values_mode=values_mode,
+                        qc_policy=qc_policy,
+                    )
+                    comp_rows.append(calc.to_dict())
+            rows = comp_rows
+        elif "bgc_calculate" in plan.post_processing:
+            agg_type = (
+                ",".join(a.value for a in spec.aggregations)
+                if spec.aggregations
+                else "SUMMARY"
+            )
+            scope = (
+                "float"
+                if len(spec.wmo_numbers) == 1
+                else ("profile" if len(rows) == 1 else "result_set")
+            )
+            calc_rows = []
+            for param in spec.parameters:
+                calc = calculate_bgc_statistics(
+                    rows,
+                    param,
+                    scope=scope,
+                    aggregation_type=agg_type,
+                    values_mode=values_mode,
+                    qc_policy=qc_policy,
+                )
+                calc_rows.append(calc.to_dict())
+            rows = calc_rows
+
     return _result(
         question=question,
         status=PipelineStatus.EXECUTED,
         parsed=parsed,
         plan=plan,
-        rows=tuple(executed["rows"]),
+        rows=tuple(rows),
         result_shape=plan.result_shape.value,
     )

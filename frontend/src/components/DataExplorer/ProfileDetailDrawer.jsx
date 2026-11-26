@@ -230,6 +230,8 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [viewMode, setViewMode] = useState("temperature");
+  const [selectedBgcParam, setSelectedBgcParam] = useState(null);
+  const [bgcValueMode, setBgcValueMode] = useState("raw");
   const [rangeOn, setRangeOn] = useState(false);
   const abortRef = useRef(null);
 
@@ -239,6 +241,7 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
   const tempColor = isDark ? "#E58532" : "#96320C";
   const salColor = isDark ? "#3BA7C9" : "#186074";
   const presColor = isDark ? "#8E9EAF" : "#435266";
+  const bgcColor = isDark ? "#3BA7C9" : "#186074";
 
   const loadProfile = useCallback(async (id) => {
     if (abortRef.current) abortRef.current.abort();
@@ -251,6 +254,9 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
     try {
       const res = await getProfileDetail(id, abortRef.current.signal);
       setData(res.profile);
+      const bgcParams = res.profile?.bgc_parameters || [];
+      setSelectedBgcParam(bgcParams.length > 0 ? bgcParams[0] : null);
+      setBgcValueMode("raw");
     } catch (err) {
       const msg = extractErrorMessage(err);
       if (msg) setError(msg);
@@ -332,10 +338,14 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
 
           {data && !loading && (
             <>
-              {/* QC Warning Banner */}
-              <div className="flex items-start gap-2 p-3 rounded-[2px] bg-surface-1 border border-state-warning/40 text-state-warning text-xs font-mono">
-                <FiAlertCircle className="mt-0.5 shrink-0" size={14} />
-                <span>Raw, unadjusted measurements. No QC flags available.</span>
+              {/* QC / Provenance Banner */}
+              <div className="flex items-start gap-2 p-3 rounded-[2px] bg-surface-1 border border-subtle text-secondary text-xs font-mono">
+                <FiAlertCircle className="mt-0.5 shrink-0 text-accent" size={14} />
+                <span>
+                  {data.data_annotation || "Raw measurements."}
+                  {" · "}
+                  {data.qc_available ? "QC flags available." : "No QC flags available."}
+                </span>
               </div>
 
               {/* Metadata */}
@@ -348,14 +358,18 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
                   <MetaRow label="Float ID" value={`#${data.float_id}`} mono />
                   <MetaRow label="WMO Number" value={data.wmo_number} mono />
                   <MetaRow label="Cycle Number" value={data.cycle_number} mono />
+                  <MetaRow label="Profile Type" value={data.profile_type || (data.has_bgc ? "BGC" : "Core")} mono />
                   <MetaRow label="Observation Date" value={fmtDate(data.profile_time)} />
                   <MetaRow label="Latitude" value={fmtNum(data.latitude, 4) + " °N"} mono />
                   <MetaRow label="Longitude" value={fmtNum(data.longitude, 4) + " °E"} mono />
                   {data.data_mode !== undefined && data.data_mode !== null && (
-                    <MetaRow label="Data Mode" value={data.data_mode} />
+                    <MetaRow label="Data Mode" value={data.data_mode} mono />
                   )}
                   {data.direction !== undefined && data.direction !== null && (
-                    <MetaRow label="Direction" value={data.direction} />
+                    <MetaRow label="Direction" value={data.direction} mono />
+                  )}
+                  {data.has_bgc && (
+                    <MetaRow label="BGC Levels" value={data.bgc_level_count} mono />
                   )}
                 </div>
               </section>
@@ -475,6 +489,23 @@ const ProfileDetailDrawer = ({ profileId, onClose }) => {
                   )}
                 </section>
               )}
+
+              {/* BGC Measurements & Plot (uses bgc_pressure exclusively) */}
+              {data.bgc_measurements && data.bgc_parameters?.length > 0 && (
+                <BgcSection
+                  bgcMeasurements={data.bgc_measurements}
+                  bgcParameters={data.bgc_parameters}
+                  selectedParam={selectedBgcParam || data.bgc_parameters[0]}
+                  onSelectParam={(p) => {
+                    setSelectedBgcParam(p);
+                    setBgcValueMode("raw");
+                  }}
+                  valueMode={bgcValueMode}
+                  onChangeValueMode={setBgcValueMode}
+                  color={bgcColor}
+                  isDark={isDark}
+                />
+              )}
             </>
           )}
         </div>
@@ -512,6 +543,161 @@ const SummaryLine = ({ measurements, levelCount }) => {
         <span className="text-state-warning">Null levels: <strong className="tabular-nums">{nullCount}</strong></span>
       )}
     </div>
+  );
+};
+
+/** BGC Parameter detail & plot using independent bgc_pressure */
+const BgcSection = ({
+  bgcMeasurements,
+  bgcParameters,
+  selectedParam,
+  onSelectParam,
+  valueMode,
+  onChangeValueMode,
+  color,
+  isDark,
+}) => {
+  const paramDetail = bgcMeasurements?.parameters?.[selectedParam];
+  const bgcPressure = bgcMeasurements?.bgc_pressure || [];
+  const hasAdjusted = Boolean(
+    paramDetail?.adjusted && paramDetail.adjusted.some((v) => v !== null)
+  );
+  const effectiveMode = valueMode === "adjusted" && hasAdjusted ? "adjusted" : "raw";
+  const values =
+    effectiveMode === "adjusted" ? paramDetail?.adjusted || [] : paramDetail?.values || [];
+  const qcFlags =
+    effectiveMode === "adjusted"
+      ? paramDetail?.adjusted_qc || []
+      : paramDetail?.qc || [];
+
+  const canPlot =
+    Array.isArray(bgcPressure) &&
+    bgcPressure.length > 0 &&
+    bgcPressure.length === values.length &&
+    values.some((v) => v !== null);
+
+  const fontColor = isDark ? "#E5EDF5" : "#141C24";
+  const gridColor = isDark ? "#223344" : "#DDD7CB";
+  const zeroColor = isDark ? "#60809E" : "#786C5A";
+  const plotBg = isDark ? "rgba(17, 26, 34, 0.95)" : "rgba(250, 248, 245, 0.95)";
+  const hoverBg = isDark ? "#17232E" : "#EBE5DA";
+
+  const trace = canPlot
+    ? {
+        x: values.map((v) => (v === null ? null : v)),
+        y: bgcPressure.map((p) => (p === null ? null : p)),
+        customdata: values.map((_, idx) =>
+          qcFlags && qcFlags[idx] !== undefined && qcFlags[idx] !== null ? String(qcFlags[idx]) : "N/A"
+        ),
+        type: "scatter",
+        mode: "lines+markers",
+        connectgaps: false,
+        line: { color, width: 1.5 },
+        marker: { color, size: 4 },
+        hovertemplate: `<b>${selectedParam}</b>: %{x} ${paramDetail?.unit || ""}<br><b>BGC Pressure</b>: %{y} dbar<br><b>QC</b>: %{customdata}<extra></extra>`,
+      }
+    : null;
+
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: plotBg,
+    font: { color: fontColor, size: 11, family: "IBM Plex Mono, monospace" },
+    margin: { l: 60, r: 20, t: 32, b: 48 },
+    title: {
+      text: `${selectedParam} (${effectiveMode}) vs BGC Pressure`,
+      font: { color: fontColor, size: 13, family: "Chivo, sans-serif" },
+    },
+    xaxis: {
+      gridcolor: gridColor,
+      zerolinecolor: zeroColor,
+      title: { text: `${selectedParam} (${paramDetail?.unit || ""})`, standoff: 8 },
+    },
+    yaxis: {
+      gridcolor: gridColor,
+      zerolinecolor: zeroColor,
+      title: { text: "BGC Pressure (dbar)", standoff: 8 },
+      autorange: "reversed",
+    },
+    hoverlabel: { bgcolor: hoverBg, font: { color: fontColor, family: "IBM Plex Mono, monospace" } },
+  };
+
+  return (
+    <section className="border-t border-subtle pt-5 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold text-secondary uppercase tracking-wider font-mono">
+          BGC Measurements (Independent BGC Pressure)
+        </h3>
+        {hasAdjusted && (
+          <div className="flex items-center gap-1 text-xs font-mono">
+            {["raw", "adjusted"].map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onChangeValueMode(mode)}
+                className={`px-2.5 py-1 rounded-[2px] border capitalize cursor-pointer ${
+                  effectiveMode === mode
+                    ? "bg-accent border-accent text-accent-contrast font-medium"
+                    : "bg-surface-1 border-subtle text-secondary hover:text-primary"
+                }`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Parameter Selector */}
+      <div className="flex flex-wrap gap-1.5">
+        {bgcParameters.map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onSelectParam(p)}
+            className={`px-2.5 py-1 text-xs rounded-[2px] border font-mono cursor-pointer transition-colors ${
+              selectedParam === p
+                ? "bg-accent border-accent text-accent-contrast font-medium"
+                : "bg-surface-1 border-subtle text-secondary hover:text-primary"
+            }`}
+          >
+            {p}
+          </button>
+        ))}
+      </div>
+
+      {/* Parameter Summary */}
+      {paramDetail && (
+        <div className="text-xs text-secondary flex flex-wrap gap-x-4 gap-y-1 bg-surface-1 border border-subtle rounded-[2px] px-4 py-2 font-mono">
+          <span>Unit: <strong className="text-primary">{paramDetail.unit}</strong></span>
+          <span>Valid: <strong className="text-primary tabular-nums">{paramDetail.valid_count}</strong></span>
+          <span>Missing: <strong className="text-primary tabular-nums">{paramDetail.missing_count}</strong></span>
+          <span>Mode: <strong className="text-primary">{paramDetail.data_mode || "R"}</strong></span>
+        </div>
+      )}
+
+      {paramDetail?.warnings?.length > 0 && (
+        <div className="text-xs font-mono text-state-warning bg-surface-1 border border-state-warning/40 rounded-[2px] px-3 py-2 space-y-1">
+          {paramDetail.warnings.map((w, i) => (
+            <p key={i}>{w}</p>
+          ))}
+        </div>
+      )}
+
+      {trace ? (
+        <Plot
+          data={[trace]}
+          layout={layout}
+          config={plotConfig}
+          style={{ width: "100%", height: 340 }}
+          useResizeHandler
+        />
+      ) : (
+        <ChartEmpty
+          label={`${selectedParam} vs BGC Pressure`}
+          message="No valid BGC measurements or aligned BGC pressure available for this parameter."
+        />
+      )}
+    </section>
   );
 };
 

@@ -83,6 +83,7 @@ class DeterministicAnswer:
     answer: str
     rows: tuple = ()
     status: str = "executed"
+    result_shape: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +128,12 @@ def answer_deterministically(question: str, engine, *, strict: bool = False):
             status="invalid",
         )
 
-    if intent is None or intent not in OWNED_INTENTS:
+    is_bgc_compare = (
+        intent is Intent.COMPARE
+        and result.plan is not None
+        and result.plan.result_shape.value == "bgc_calculation"
+    )
+    if intent is None or (intent not in OWNED_INTENTS and not is_bgc_compare):
         return None
 
     # Unsupported plans (depth, pressure ranges, MEAN/MIN/MAX, ...) and
@@ -200,6 +206,10 @@ def has_structured_refinement(question: str) -> bool:
         or spec.bounding_box
         or spec.qc_filter
         or spec.data_mode
+        or spec.has_bgc is not None
+        or spec.direction is not None
+        or spec.float_level
+        or spec.numeric_filter is not None
         or spec.pressure_range
         or spec.depth_requested
         or spec.depth_range_m
@@ -326,6 +336,9 @@ def _render(result: PipelineResult) -> DeterministicAnswer | None:
         return _render_float_metadata(rows)
     if shape == "availability_rows":
         return _render_availability(result, rows)
+    if shape == "bgc_calculation":
+        ans = _render_bgc_calculation(result, rows)
+        return DeterministicAnswer(ans.answer, ans.rows, ans.status, result_shape=shape)
 
     # An unknown shape is not a success: let the existing route answer.
     logging.warning(
@@ -505,3 +518,50 @@ def _render_availability(result: PipelineResult, rows) -> DeterministicAnswer:
         + (f"\n{note}" if note else "")
     )
     return DeterministicAnswer(text, ())
+
+
+def _render_bgc_calculation(result: PipelineResult, rows) -> DeterministicAnswer:
+    if not rows:
+        return DeterministicAnswer(
+            "No matching BGC profiles were found for the requested calculation.",
+            (),
+        )
+
+    lines = []
+    for row in rows:
+        param = row.get("parameter", "BGC")
+        unit = row.get("unit", "")
+        valid = row.get("valid_count", 0)
+        missing = row.get("missing_count", 0)
+        excluded = row.get("excluded_count", 0)
+        scope = row.get("aggregation_scope", "result_set")
+        wmo = row.get("wmo_number")
+        cycle = row.get("cycle_number")
+
+        prefix = f"{param}"
+        if wmo is not None and cycle is not None:
+            prefix += f" (WMO {wmo}, cycle {cycle})"
+        elif wmo is not None:
+            prefix += f" (WMO {wmo})"
+        else:
+            prefix += f" ({scope})"
+
+        if valid == 0:
+            lines.append(
+                f"{prefix}: no valid measurements found "
+                f"(missing={missing}, qc_excluded={excluded}, policy={row.get('qc_policy')})."
+            )
+            continue
+
+        unit_str = f" {unit}" if unit else ""
+        lines.append(
+            f"{prefix}: mean={row.get('mean')}{unit_str}, "
+            f"median={row.get('median')}{unit_str}, "
+            f"min={row.get('minimum')}{unit_str}, "
+            f"max={row.get('maximum')}{unit_str}, "
+            f"std_dev={row.get('std_dev')} "
+            f"(valid={valid}, missing={missing}, qc_excluded={excluded}, "
+            f"mode={row.get('data_mode')}, qc={row.get('qc_policy')})."
+        )
+
+    return DeterministicAnswer("\n".join(lines), ())

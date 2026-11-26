@@ -124,6 +124,17 @@ const ProfilesTable = ({
                     {renderSortIcon("longitude")}
                   </div>
                 </th>
+                <th
+                  onClick={() => handleSort("direction")}
+                  className="px-4 py-3 cursor-pointer hover:text-primary transition-colors select-none font-medium"
+                >
+                  <div className="flex items-center">
+                    <span>Dir</span>
+                    {renderSortIcon("direction")}
+                  </div>
+                </th>
+                <th className="px-4 py-3 font-medium">Type</th>
+                <th className="px-4 py-3 font-medium">BGC Parameters</th>
                 <th className="px-4 py-3 text-right font-medium">Levels</th>
                 <th className="px-4 py-3 w-16 text-right font-medium">Action</th>
               </tr>
@@ -160,6 +171,25 @@ const ProfilesTable = ({
                     ) : (
                       <span className="text-muted">—</span>
                     )}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-secondary">
+                    {p.direction || "—"}
+                  </td>
+                  <td className="px-4 py-3 font-mono">
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded-[2px] border text-[11px] font-medium ${
+                        p.has_bgc
+                          ? "bg-accent/10 border-accent/40 text-accent"
+                          : "bg-surface-1 border-subtle text-secondary"
+                      }`}
+                    >
+                      {p.profile_type || (p.has_bgc ? "BGC" : "Core")}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-secondary max-w-[200px] truncate" title={(p.bgc_parameters || []).join(", ")}>
+                    {p.bgc_parameters && p.bgc_parameters.length > 0
+                      ? p.bgc_parameters.join(", ")
+                      : <span className="text-muted">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <span className="inline-block px-2 py-0.5 rounded-[2px] bg-surface-1 border border-subtle text-secondary font-mono text-xs tabular-nums">

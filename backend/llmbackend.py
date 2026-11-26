@@ -7,13 +7,23 @@ import ollama
 import streamlit as st
 from sqlalchemy import text
 
+from bgc_calculations import (
+    BGC_PARAMETER_UNITS,
+    calculate_bgc_statistics,
+)
 from database_manager import DatabaseManager
 from query_integration import (
     DeterministicPipelineError,
     answer_deterministically,
     has_structured_refinement,
 )
+from query_parser import parse_query
 from query_router import ArgoQueryRouter, Route
+from query_spec import BGC_PARAMETERS, Parameter
+
+# Canonical token set used for exact parameter membership checks against the
+# comma-separated ``bgc_parameters`` ChromaDB metadata field.
+_BGC_PARAM_TOKENS: frozenset[str] = frozenset(p.value for p in BGC_PARAMETERS)
 
 
 class ChatRetrievalError(RuntimeError):
@@ -668,57 +678,306 @@ class ArgoRAG:
             f"The first {displayed_count} are listed below in chronological order."
         )
 
-    def _retrieve_semantic(self, question):
-        """
-        Retrieve relevant profiles using ChromaDB semantic search,
-        then obtain the authoritative records from MySQL.
-        """
+    # ------------------------------------------------------------------
+    # BGC-aware semantic retrieval helpers
+    # ------------------------------------------------------------------
 
-        context_data = []
+    @staticmethod
+    def _bgc_where_filter(parsed) -> dict | None:
+        """Return a ChromaDB ``where`` clause derived from the parsed query.
 
+        Returns ``None`` when no BGC product restriction is requested so that
+        the existing unrestricted retrieval behaviour is preserved exactly.
+        Only an *explicit* user request for BGC or core-only profiles triggers
+        a filter — ocean-science content alone does not.
+        """
         try:
+            spec = parsed.validation.spec if parsed.validation else None
+            if spec is None:
+                return None
+            if spec.has_bgc is True:
+                return {"has_bgc": True}
+            if spec.has_bgc is False:
+                return {"has_bgc": False}
+        except Exception:
+            pass
+        return None
 
+    @staticmethod
+    def _requested_bgc_params(parsed) -> frozenset[str]:
+        """Return the set of BGC parameter tokens requested by the query.
+
+        Only returns tokens for parameters that belong to ``BGC_PARAMETERS``;
+        core parameters (TEMP, PSAL, PRES) are excluded.
+        """
+        try:
+            spec = parsed.validation.spec if parsed.validation else None
+            if spec is None:
+                return frozenset()
+            return frozenset(
+                p.value for p in spec.parameters if p in BGC_PARAMETERS
+            )
+        except Exception:
+            return frozenset()
+
+    @staticmethod
+    def _requested_direction(parsed) -> str | None:
+        """Return ``'A'`` or ``'D'`` when the parsed query explicitly requests
+        ascending or descending profiles, or ``None`` otherwise.
+        """
+        try:
+            spec = parsed.validation.spec if parsed.validation else None
+            if spec is None or spec.direction is None:
+                return None
+            return spec.direction.value
+        except Exception:
+            return None
+
+    @staticmethod
+    def _combine_where_filters(
+        bgc_where: dict | None, required_direction: str | None
+    ) -> dict | None:
+        """Combine optional BGC and direction ChromaDB ``where`` filters."""
+        clauses: list[dict] = []
+        if bgc_where is not None:
+            clauses.append(bgc_where)
+        if required_direction is not None:
+            clauses.append({"direction": required_direction})
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"$and": clauses}
+
+    @staticmethod
+    def _decode_sql_bgc_params(raw_bgc_params) -> tuple[dict | None, bool]:
+        """Safely decode SQL ``bgc_params`` JSON.
+
+        Returns ``(decoded_dict, is_malformed)``.
+        ``None`` (SQL NULL) returns ``(None, False)``.
+        Malformed JSON or non-dict values return ``(None, True)``.
+        """
+        if raw_bgc_params is None:
+            return None, False
+        if isinstance(raw_bgc_params, dict):
+            return raw_bgc_params, False
+        if isinstance(raw_bgc_params, (str, bytes)):
+            try:
+                decoded = json.loads(raw_bgc_params)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None, True
+            if decoded is None:
+                return None, True
+            if isinstance(decoded, dict):
+                return decoded, False
+            return None, True
+        return None, True
+
+    @classmethod
+    def _sql_has_all_params(
+        cls, sql_row: dict, required_params: frozenset[str]
+    ) -> bool:
+        """Authoritatively verify against SQL ``bgc_params`` that every
+        requested BGC parameter key exists and holds a non-empty array.
+        """
+        decoded, is_malformed = cls._decode_sql_bgc_params(
+            sql_row.get("bgc_params")
+        )
+        if is_malformed or not decoded:
+            return False
+        for tok in required_params:
+            if tok not in decoded:
+                return False
+            arr = decoded[tok]
+            if not isinstance(arr, (list, tuple)) or len(arr) == 0:
+                return False
+        return True
+
+    @staticmethod
+    def _metadata_has_param(metadata: dict, param_token: str) -> bool:
+        """Return True if ``param_token`` appears as an exact member of the
+        comma-separated ``bgc_parameters`` metadata field.
+
+        CHLA and CHLA_FLUORESCENCE are kept distinct because they are stored
+        as separate tokens (e.g. "BBP700,CHLA,DOXY" vs
+        "BBP700,CHLA_FLUORESCENCE,DOXY").
+        """
+        raw = metadata.get("bgc_parameters", "") or ""
+        tokens = {t.strip() for t in raw.split(",") if t.strip()}
+        return param_token in tokens
+
+    @classmethod
+    def _check_metadata_sql_consistency(
+        cls, metadata: dict, sql_row: dict
+    ) -> list[str]:
+        """Return a list of mismatch descriptions between ChromaDB metadata and
+        the SQL record.  An empty list means they are consistent.
+
+        Verifies all corresponding fields present in the collection schema:
+        profile_id_sql, float_id_sql (WMO), cycle_number, direction, has_bgc,
+        and bgc_parameters token set.
+        """
+        mismatches: list[str] = []
+
+        chroma_pid = metadata.get("profile_id_sql")
+        sql_pid = sql_row.get("profile_id")
+        if chroma_pid is not None and sql_pid is not None:
+            if int(chroma_pid) != int(sql_pid):
+                mismatches.append(
+                    f"profile_id_sql: ChromaDB={chroma_pid}, SQL={sql_pid}"
+                )
+
+        chroma_wmo = metadata.get("float_id_sql")
+        sql_wmo = sql_row.get("wmo_number")
+        if chroma_wmo is not None and sql_wmo is not None:
+            if int(chroma_wmo) != int(sql_wmo):
+                mismatches.append(
+                    f"float_id_sql: ChromaDB={chroma_wmo}, SQL={sql_wmo}"
+                )
+
+        chroma_cycle = metadata.get("cycle_number")
+        sql_cycle = sql_row.get("cycle_number")
+        if chroma_cycle is not None and sql_cycle is not None:
+            if int(chroma_cycle) != int(sql_cycle):
+                mismatches.append(
+                    f"cycle_number: ChromaDB={chroma_cycle}, SQL={sql_cycle}"
+                )
+
+        chroma_dir = metadata.get("direction")
+        sql_dir = sql_row.get("direction")
+        if chroma_dir is not None and sql_dir is not None:
+            if str(chroma_dir).strip() != str(sql_dir).strip():
+                mismatches.append(
+                    f"direction: ChromaDB={chroma_dir!r}, SQL={sql_dir!r}"
+                )
+
+        decoded_bgc, is_malformed = cls._decode_sql_bgc_params(
+            sql_row.get("bgc_params")
+        )
+        if is_malformed:
+            mismatches.append("bgc_params: SQL value is malformed or non-object JSON")
+
+        sql_has_bgc = isinstance(decoded_bgc, dict) and len(decoded_bgc) > 0
+        chroma_has_bgc = metadata.get("has_bgc")
+        if chroma_has_bgc is not None and bool(chroma_has_bgc) != sql_has_bgc:
+            mismatches.append(
+                f"has_bgc: ChromaDB={chroma_has_bgc}, SQL={'non-empty' if sql_has_bgc else 'null/empty'}"
+            )
+
+        if "bgc_parameters" in metadata and metadata.get("bgc_parameters") is not None:
+            chroma_tokens = {
+                t.strip()
+                for t in str(metadata.get("bgc_parameters") or "").split(",")
+                if t.strip()
+            }
+            sql_tokens = (
+                set(decoded_bgc.keys()) if isinstance(decoded_bgc, dict) else set()
+            )
+            if chroma_tokens != sql_tokens:
+                mismatches.append(
+                    f"bgc_parameters: ChromaDB={sorted(chroma_tokens)}, SQL={sorted(sql_tokens)}"
+                )
+
+        return mismatches
+
+    def _retrieve_semantic(
+        self,
+        question,
+        bgc_where: dict | None = None,
+        required_params: frozenset[str] | None = None,
+        required_direction: str | None = None,
+    ):
+        """Retrieve relevant profiles using ChromaDB semantic search,
+        then verify and obtain the authoritative records from MySQL.
+
+        Parameters
+        ----------
+        question : str
+            The user's question (used for embedding).
+        bgc_where : dict | None
+            Optional ChromaDB ``where`` filter, e.g. ``{"has_bgc": True}``.
+            Pass ``None`` for unrestricted retrieval.
+        required_params : frozenset[str] | None
+            Optional set of BGC parameter tokens (e.g. ``{"DOXY"}``).
+            Candidates are narrowed via ChromaDB metadata and authoritatively
+            verified against SQL ``bgc_params`` JSON.
+        required_direction : str | None
+            Optional profile direction constraint (``'A'`` or ``'D'``).
+            Verified against SQL ``p.direction``.
+        """
+
+        context_data: list[dict] = []
+        effective_where = self._combine_where_filters(
+            bgc_where, required_direction
+        )
+
+        # --- ChromaDB query -----------------------------------------------
+        try:
             query_embedding = (
                 self.db_manager.embedding_model
                 .encode(question)
                 .tolist()
             )
 
-            search_results = (
-                self.db_manager.chroma_collection.query(
-                    query_embeddings=[query_embedding],
-                    n_results=5
-                )
+            if required_params or required_direction is not None:
+                try:
+                    total_vecs = self.db_manager.chroma_collection.count()
+                    candidate_limit = max(100, min(int(total_vecs), 1000))
+                except Exception:
+                    candidate_limit = 100
+            else:
+                candidate_limit = 5
+            query_kwargs: dict = {
+                "query_embeddings": [query_embedding],
+                "n_results": candidate_limit,
+                "include": ["metadatas", "distances"],
+            }
+            if effective_where is not None:
+                query_kwargs["where"] = effective_where
+
+            search_results = self.db_manager.chroma_collection.query(
+                **query_kwargs
             )
 
             ids = search_results.get("ids", [[]])
-
             if not ids or not ids[0]:
                 return []
 
-            metadatas = search_results.get("metadatas", [[]])
-
-            profile_sql_ids = []
-
-            for metadata in metadatas[0]:
-
-                if metadata and "profile_id_sql" in metadata:
-
-                    profile_sql_ids.append(
-                        int(metadata["profile_id_sql"])
-                    )
+            metadatas = search_results.get("metadatas", [[]])[0]
 
         except Exception as e:
-
-            logging.error(
-                f"Error querying ChromaDB: {e}"
-            )
-
+            logging.error("Error querying ChromaDB: %s", e)
             raise ChatRetrievalError(
                 "Semantic profile search is currently unavailable."
             ) from e
 
-        query = text(
+        # --- Exact BGC parameter membership filter (Task B) ----------------
+        # Applied against the ChromaDB metadata before touching MySQL, so the
+        # SQL retrieval loop only runs for qualifying candidates.
+        filtered_metadatas: list[dict] = []
+        for metadata in metadatas:
+            if not metadata or "profile_id_sql" not in metadata:
+                continue
+            if required_params:
+                if not all(
+                    self._metadata_has_param(metadata, tok)
+                    for tok in required_params
+                ):
+                    logging.debug(
+                        "Excluding profile_id_sql=%s: missing params %s (has %s)",
+                        metadata.get("profile_id_sql"),
+                        required_params,
+                        metadata.get("bgc_parameters"),
+                    )
+                    continue
+            filtered_metadatas.append(metadata)
+
+        if not filtered_metadatas:
+            return []
+
+        # --- MySQL retrieval (Tasks C + D) ---------------------------------
+        # Extends the original query with BGC columns and direction.
+        sql_query = text(
             """
             SELECT
                 p.profile_id,
@@ -730,37 +989,100 @@ class ArgoRAG:
                 p.temperature,
                 p.salinity,
                 p.bgc_params,
+                p.bgc_qc,
+                p.bgc_adjusted,
+                p.bgc_adjusted_qc,
+                p.bgc_pressure,
+                p.bgc_source_metadata,
+                p.direction,
+                p.data_mode,
                 f.wmo_number
             FROM argo_profiles p
-            JOIN argo_floats f
-                ON p.float_id = f.float_id
+            JOIN argo_floats f ON p.float_id = f.float_id
             WHERE p.profile_id = :profile_id
             """
         )
 
+        # Keep a set of SQL profile IDs already added to avoid duplicates.
+        seen_profile_ids: set[int] = set()
+
         try:
-
             with self.db_manager.mysql_engine.connect() as conn:
+                for metadata in filtered_metadatas:
+                    profile_id = int(metadata["profile_id_sql"])
+                    if profile_id in seen_profile_ids:
+                        continue
 
-                for profile_id in profile_sql_ids:
-
-                    result = conn.execute(
-                        query,
-                        {"profile_id": profile_id}
+                    sql_row = conn.execute(
+                        sql_query, {"profile_id": profile_id}
                     ).fetchone()
 
-                    if result:
-
-                        context_data.append(
-                            dict(result._mapping)
+                    if sql_row is None:
+                        logging.warning(
+                            "ChromaDB references profile_id_sql=%d but it was "
+                            "not found in MySQL — skipping.",
+                            profile_id,
                         )
+                        continue
+
+                    row_dict = dict(sql_row._mapping)
+
+                    # Metadata consistency check (Task D / Phase 2.1).
+                    mismatches = self._check_metadata_sql_consistency(
+                        metadata, row_dict
+                    )
+                    if mismatches:
+                        logging.warning(
+                            "Metadata/SQL mismatch for profile_id=%d: %s — "
+                            "excluding from result set.",
+                            profile_id,
+                            "; ".join(mismatches),
+                        )
+                        continue
+
+                    # Authoritative SQL-side BGC parameter membership check.
+                    if required_params and not self._sql_has_all_params(
+                        row_dict, required_params
+                    ):
+                        logging.warning(
+                            "SQL record for profile_id=%d does not contain all "
+                            "requested BGC parameters %s — excluding.",
+                            profile_id,
+                            sorted(required_params),
+                        )
+                        continue
+
+                    # Authoritative SQL-side direction check.
+                    if required_direction is not None:
+                        sql_dir = str(row_dict.get("direction") or "").strip()
+                        if sql_dir != required_direction:
+                            logging.warning(
+                                "SQL record for profile_id=%d has direction=%r, "
+                                "expected %r — excluding.",
+                                profile_id,
+                                sql_dir,
+                                required_direction,
+                            )
+                            continue
+
+                    # Annotate with ChromaDB metadata fields (product_type,
+                    # has_bgc, bgc_parameters, bgc_parameter_count) so that
+                    # _build_compact_context can surface them without an extra
+                    # SQL join.
+                    row_dict["_meta_has_bgc"] = metadata.get("has_bgc")
+                    row_dict["_meta_product_type"] = metadata.get("product_type")
+                    row_dict["_meta_bgc_parameters"] = metadata.get("bgc_parameters")
+                    row_dict["_meta_bgc_parameter_count"] = metadata.get(
+                        "bgc_parameter_count"
+                    )
+
+                    seen_profile_ids.add(profile_id)
+                    context_data.append(row_dict)
+                    if len(context_data) >= 5:
+                        break
 
         except Exception as e:
-
-            logging.error(
-                f"Error retrieving semantic profiles: {e}"
-            )
-
+            logging.error("Error retrieving semantic profiles: %s", e)
             raise ChatRetrievalError(
                 "Semantic profile search could not be completed."
             ) from e
@@ -942,7 +1264,58 @@ class ArgoRAG:
             "pressure_count": len(pressure),
             "temperature_count": len(temperature),
             "salinity_count": len(salinity),
+            # BGC product metadata (Task D)
+            "direction": profile.get("direction"),
+            "has_bgc": profile.get("_meta_has_bgc"),
+            "product_type": profile.get("_meta_product_type"),
+            "bgc_parameters": profile.get("_meta_bgc_parameters"),
+            "bgc_parameter_count": profile.get("_meta_bgc_parameter_count"),
         }
+
+        # BGC measurement arrays (Task C) — parsed but not sent to Qwen3 raw.
+        # Store level count and pressure range to inform the context summary.
+        bgc_pressure_raw = profile.get("bgc_pressure")
+        bgc_pressure = self._parse_array(bgc_pressure_raw) if bgc_pressure_raw else []
+        summary["bgc_pressure_count"] = len(bgc_pressure)
+        if bgc_pressure:
+            valid_bgc_pres = self._valid_numbers(bgc_pressure)
+            summary["bgc_pressure_min"] = (
+                self._round_number(min(valid_bgc_pres)) if valid_bgc_pres else None
+            )
+            summary["bgc_pressure_max"] = (
+                self._round_number(max(valid_bgc_pres)) if valid_bgc_pres else None
+            )
+        else:
+            summary["bgc_pressure_min"] = None
+            summary["bgc_pressure_max"] = None
+
+        # BGC parameter values: decode the JSON dict (keys=param names,
+        # values=arrays) and compute validated statistics via bgc_calculations.
+        bgc_params_raw = profile.get("bgc_params")
+        bgc_param_counts: dict[str, int] = {}
+        bgc_stats: dict[str, dict] = {}
+        if bgc_params_raw:
+            try:
+                bgc_dict = (
+                    bgc_params_raw
+                    if isinstance(bgc_params_raw, dict)
+                    else json.loads(bgc_params_raw)
+                )
+                for param_key, param_arr in bgc_dict.items():
+                    parsed_arr = self._parse_array(param_arr) if param_arr else []
+                    valid_arr = self._valid_numbers(parsed_arr)
+                    bgc_param_counts[param_key] = len(valid_arr)
+                    calc = calculate_bgc_statistics(
+                        [profile],
+                        param_key,
+                        scope="profile",
+                        aggregation_type="SUMMARY",
+                    )
+                    bgc_stats[param_key] = calc.to_dict()
+            except Exception:
+                pass  # Malformed JSON — treat as no BGC data
+        summary["bgc_param_counts"] = bgc_param_counts
+        summary["bgc_stats"] = bgc_stats
 
         for name, values in (
             ("pressure", pressure),
@@ -1222,6 +1595,64 @@ class ArgoRAG:
                     f"{summary[f'{name}_max']} {unit} "
                     f"(mean {summary.get(f'{name}_mean')} {unit})"
                 )
+            # BGC product metadata (Phase 2 — Task D)
+            direction = summary.get("direction")
+            if direction:
+                context_lines.append(
+                    f"Profile direction: {'ascending' if direction == 'A' else 'descending'}"
+                )
+            product_type = summary.get("product_type")
+            if product_type:
+                context_lines.append(f"Product type: {product_type}")
+            bgc_params_str = summary.get("bgc_parameters")
+            if bgc_params_str:
+                context_lines.append(
+                    f"BGC parameters present: {bgc_params_str}"
+                )
+            # BGC pressure axis (Phase 2 — Task C)
+            bgc_pres_count = summary.get("bgc_pressure_count", 0)
+            if bgc_pres_count:
+                bgc_pmin = summary.get("bgc_pressure_min")
+                bgc_pmax = summary.get("bgc_pressure_max")
+                context_lines.append(
+                    f"BGC pressure axis: {bgc_pres_count} levels"
+                    + (
+                        f", range {bgc_pmin} to {bgc_pmax} dbar"
+                        if bgc_pmin is not None and bgc_pmax is not None
+                        else ""
+                    )
+                )
+            # BGC parameter validated statistics (Phase 3A/3C)
+            bgc_stats = summary.get("bgc_stats") or {}
+            if bgc_stats:
+                for param_key in sorted(bgc_stats):
+                    st_dict = bgc_stats[param_key]
+                    unit = st_dict.get("unit") or BGC_PARAMETER_UNITS.get(param_key, "")
+                    valid_cnt = st_dict.get("valid_count", 0)
+                    missing_cnt = st_dict.get("missing_count", 0)
+                    if valid_cnt == 0:
+                        context_lines.append(
+                            f"BGC {param_key}: 0 valid levels "
+                            f"({missing_cnt} missing, unit: {unit})"
+                        )
+                    else:
+                        context_lines.append(
+                            f"BGC {param_key}: {valid_cnt} valid levels "
+                            f"({missing_cnt} missing, unit: {unit}, "
+                            f"qc_policy: {st_dict.get('qc_policy')}), "
+                            f"min={st_dict.get('minimum')}, max={st_dict.get('maximum')}, "
+                            f"mean={st_dict.get('mean')}, median={st_dict.get('median')}, "
+                            f"std_dev={st_dict.get('std_dev')}"
+                        )
+                    for w in st_dict.get("warnings") or ():
+                        context_lines.append(f"BGC {param_key} note: {w}")
+            else:
+                bgc_param_counts = summary.get("bgc_param_counts") or {}
+                if bgc_param_counts:
+                    for param_key, valid_cnt in sorted(bgc_param_counts.items()):
+                        context_lines.append(
+                            f"BGC {param_key}: {valid_cnt} valid levels"
+                        )
             context_lines.append("")
 
         notes = []
@@ -1318,9 +1749,14 @@ IMPORTANT:
 9. Do not claim a scientific cause or explanation unless
    the supplied context supports it.
 
-10. Do not extrapolate beyond the supplied information.
+10. When reporting BGC statistics (minimum, maximum, mean, median,
+    standard deviation), report only the exact values, units,
+    valid/missing counts, and QC notes provided in the context. Do not
+    recompute, round differently, or claim statistical significance.
 
-11. Keep the answer concise and directly answer the question.
+11. Do not extrapolate beyond the supplied information.
+
+12. Keep the answer concise and directly answer the question.
 
 12. The numerical values in the context were calculated or
     retrieved by the application. Do not modify them.
@@ -1663,8 +2099,23 @@ ANSWER:
             # because it names the unsupported operation more precisely.
             guard = self._unsupported_analysis_answer(question)
 
+            # Phase 3: a BGC calculation or numeric-filter answer is a
+            # genuinely computed Python result, not a spurious profile list.
+            # It must win over the guard unconditionally when successfully
+            # executed, so the guard check is bypassed for those shapes.
+            _is_bgc_computed = (
+                deterministic is not None
+                and deterministic.status == "executed"
+                and deterministic.result_shape in (
+                    "bgc_calculation",
+                    "bgc_numeric_filter",
+                )
+            )
+
             if deterministic is not None and not (
-                guard is not None and deterministic.status == "executed"
+                guard is not None
+                and deterministic.status == "executed"
+                and not _is_bgc_computed
             ):
 
                 logging.info(
@@ -1688,9 +2139,42 @@ ANSWER:
 
                 return guard
 
-            context_data = self._retrieve_semantic(
-                question
-            )
+            # Phase 2 / 2.1: derive BGC metadata filter, parameter membership,
+            # and direction constraints from the parsed question.
+            _parsed_q = parse_query(question)
+            _bgc_where = self._bgc_where_filter(_parsed_q)
+            _required_params = self._requested_bgc_params(_parsed_q)
+            _required_direction = self._requested_direction(_parsed_q)
+
+            if _bgc_where is not None:
+                logging.info(
+                    "Semantic retrieval: applying ChromaDB filter %s",
+                    _bgc_where,
+                )
+            if _required_params:
+                logging.info(
+                    "Semantic retrieval: requiring BGC params %s",
+                    _required_params,
+                )
+            if _required_direction is not None:
+                logging.info(
+                    "Semantic retrieval: requiring direction %s",
+                    _required_direction,
+                )
+
+            if (
+                _bgc_where is not None
+                or _required_params
+                or _required_direction is not None
+            ):
+                context_data = self._retrieve_semantic(
+                    question,
+                    bgc_where=_bgc_where,
+                    required_params=_required_params if _required_params else None,
+                    required_direction=_required_direction,
+                )
+            else:
+                context_data = self._retrieve_semantic(question)
 
             if not context_data:
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { FiFilter, FiX, FiCheck, FiRotateCcw, FiAlertCircle } from "react-icons/fi";
 
-const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
+const FilterPanel = ({ filters, onApply, onClear, resultCount }) => {
   const [localFilters, setLocalFilters] = useState(filters);
   const [validationError, setValidationError] = useState(null);
 
@@ -69,6 +69,9 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
   if (filters.wmo_number) activeChips.push({ field: "wmo_number", label: `WMO: ${filters.wmo_number}` });
   if (filters.profile_id) activeChips.push({ field: "profile_id", label: `Profile ID: ${filters.profile_id}` });
   if (filters.cycle_number) activeChips.push({ field: "cycle_number", label: `Cycle: ${filters.cycle_number}` });
+  if (filters.profile_type) activeChips.push({ field: "profile_type", label: `Type: ${filters.profile_type.toUpperCase()}` });
+  if (filters.parameter) activeChips.push({ field: "parameter", label: `Param: ${filters.parameter}` });
+  if (filters.direction) activeChips.push({ field: "direction", label: `Dir: ${filters.direction === "A" ? "Ascending" : "Descending"}` });
   if (filters.start_date) activeChips.push({ field: "start_date", label: `From: ${filters.start_date}` });
   if (filters.end_date) activeChips.push({ field: "end_date", label: `To: ${filters.end_date}` });
   if (filters.min_lat || filters.max_lat) {
@@ -192,6 +195,61 @@ const FilterPanel = ({ filters, onApply, onClear, resultCount, activeTab }) => {
               onChange={(e) => handleChange("cycle_number", e.target.value)}
               className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
             />
+          </div>
+
+          {/* Profile Type (Core / BGC) */}
+          <div>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Profile Type
+            </label>
+            <select
+              value={localFilters.profile_type || ""}
+              onChange={(e) => handleChange("profile_type", e.target.value)}
+              className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
+            >
+              <option value="">All Profiles</option>
+              <option value="bgc">BGC-Argo</option>
+              <option value="core">Core Only</option>
+            </select>
+          </div>
+
+          {/* Parameter Filter */}
+          <div>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Parameter
+            </label>
+            <select
+              value={localFilters.parameter || ""}
+              onChange={(e) => handleChange("parameter", e.target.value)}
+              className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
+            >
+              <option value="">All Parameters</option>
+              <option value="DOXY">DOXY (Oxygen)</option>
+              <option value="CHLA">CHLA (Chlorophyll-a)</option>
+              <option value="CHLA_FLUORESCENCE">CHLA_FLUORESCENCE</option>
+              <option value="BBP700">BBP700 (Backscatter)</option>
+              <option value="NITRATE">NITRATE</option>
+              <option value="PH_IN_SITU_TOTAL">PH_IN_SITU_TOTAL</option>
+              <option value="TEMP">TEMP (Temperature)</option>
+              <option value="PSAL">PSAL (Salinity)</option>
+              <option value="PRES">PRES (Pressure)</option>
+            </select>
+          </div>
+
+          {/* Direction Filter */}
+          <div>
+            <label className="block text-secondary mb-1 font-mono uppercase text-[11px] tracking-wide">
+              Direction
+            </label>
+            <select
+              value={localFilters.direction || ""}
+              onChange={(e) => handleChange("direction", e.target.value)}
+              className="w-full px-2.5 py-1.5 bg-surface-1 border border-strong rounded-[2px] text-primary text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent"
+            >
+              <option value="">All Directions</option>
+              <option value="A">Ascending (A)</option>
+              <option value="D">Descending (D)</option>
+            </select>
           </div>
 
           {/* Date Range */}

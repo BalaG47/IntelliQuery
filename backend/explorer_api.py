@@ -175,6 +175,26 @@ def create_explorer_blueprint(db_manager):
             if min_lon is not None and max_lon is not None and min_lon > max_lon:
                 return jsonify({"error": "min_lon cannot be greater than max_lon."}), 400
 
+            profile_type = request.args.get("profile_type", "").strip().lower() or None
+            if profile_type is not None and profile_type not in ("all", "bgc", "core"):
+                return jsonify({"error": "Invalid profile_type: must be 'all', 'bgc', or 'core'."}), 400
+            if profile_type == "all":
+                profile_type = None
+
+            parameter = request.args.get("parameter", "").strip().upper() or None
+            allowed_parameters = (
+                "TEMP", "PSAL", "PRES",
+                "DOXY", "CHLA", "CHLA_FLUORESCENCE", "BBP700", "NITRATE", "PH_IN_SITU_TOTAL",
+            )
+            if parameter is not None and parameter not in allowed_parameters:
+                return jsonify({
+                    "error": f"Invalid parameter: '{parameter}'. Allowed parameters: {list(allowed_parameters)}"
+                }), 400
+
+            direction = request.args.get("direction", "").strip().upper() or None
+            if direction is not None and direction not in ("A", "D"):
+                return jsonify({"error": "Invalid direction: must be 'A' or 'D'."}), 400
+
             sort_by = request.args.get("sort_by", "profile_time").lower()
             allowed_sorts = (
                 "profile_time",
@@ -183,6 +203,7 @@ def create_explorer_blueprint(db_manager):
                 "latitude",
                 "longitude",
                 "wmo_number",
+                "direction",
             )
             if sort_by not in allowed_sorts:
                 return jsonify({
@@ -205,6 +226,9 @@ def create_explorer_blueprint(db_manager):
                 max_lat=max_lat,
                 min_lon=min_lon,
                 max_lon=max_lon,
+                profile_type=profile_type,
+                parameter=parameter,
+                direction=direction,
                 sort_by=sort_by,
                 sort_dir=sort_dir
             )
@@ -235,6 +259,94 @@ def create_explorer_blueprint(db_manager):
         except Exception as e:
             logging.error(f"Error fetching profile {profile_id}: {e}")
             return jsonify({"error": "Failed to retrieve profile detail."}), 500
+
+    # =========================================================================
+    # 5B. SCIENTIFIC INSIGHTS (Phase 4B)
+    # =========================================================================
+    @explorer_bp.route("/insights/summary", methods=["GET"])
+    def get_insights_summary():
+        """Returns dataset composition, float distribution, and BGC parameter statistics."""
+        try:
+            data = db_manager.get_insights_summary()
+            return jsonify(data), 200
+        except SQLAlchemyError as sqle:
+            logging.error(f"Database error in get_insights_summary: {sqle}")
+            return jsonify({"error": "Database service is temporarily unavailable. Please try again later."}), 503
+        except Exception as e:
+            logging.error(f"Error fetching insights summary: {e}")
+            return jsonify({"error": "Failed to retrieve scientific insights summary."}), 500
+
+    @explorer_bp.route("/insights/depth-profile", methods=["GET"])
+    def get_insights_depth_profile():
+        """Returns explicitly binned parameter-vs-pressure statistics."""
+        try:
+            parameter = request.args.get("parameter", "DOXY").strip().upper()
+            allowed_bgc = (
+                "DOXY", "CHLA", "CHLA_FLUORESCENCE", "BBP700", "NITRATE", "PH_IN_SITU_TOTAL"
+            )
+            if parameter not in allowed_bgc:
+                return jsonify({
+                    "error": f"Invalid BGC parameter '{parameter}'. Allowed: {list(allowed_bgc)}"
+                }), 400
+
+            bin_size = _parse_int(request.args.get("bin_size", 50), "bin_size", min_val=10, max_val=500)
+            wmo_number = _parse_int(request.args.get("wmo_number"), "wmo_number", min_val=1)
+
+            data = db_manager.get_insights_depth_profile(
+                parameter=parameter,
+                bin_size_dbar=bin_size,
+                wmo_number=wmo_number,
+            )
+            return jsonify(data), 200
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        except SQLAlchemyError as sqle:
+            logging.error(f"Database error in get_insights_depth_profile: {sqle}")
+            return jsonify({"error": "Database service is temporarily unavailable. Please try again later."}), 503
+        except Exception as e:
+            logging.error(f"Error fetching depth profile insights: {e}")
+            return jsonify({"error": "Failed to retrieve depth-binned insights."}), 500
+
+    @explorer_bp.route("/insights/compare", methods=["GET"])
+    def get_insights_compare():
+        """Compares 2 to 5 profiles for a selected parameter without merging grids."""
+        try:
+            raw_ids = request.args.get("profile_ids", "").strip()
+            if not raw_ids:
+                return jsonify({"error": "Parameter 'profile_ids' is required (2 to 5 comma-separated IDs)."}), 400
+
+            profile_ids = []
+            for part in raw_ids.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                pid = _parse_int(part, "profile_ids", min_val=1)
+                if pid not in profile_ids:
+                    profile_ids.append(pid)
+
+            if len(profile_ids) < 2 or len(profile_ids) > 5:
+                return jsonify({"error": "Please provide between 2 and 5 distinct profile_ids."}), 400
+
+            parameter = request.args.get("parameter", "DOXY").strip().upper()
+            allowed_params = (
+                "TEMP", "PSAL",
+                "DOXY", "CHLA", "CHLA_FLUORESCENCE", "BBP700", "NITRATE", "PH_IN_SITU_TOTAL",
+            )
+            if parameter not in allowed_params:
+                return jsonify({
+                    "error": f"Invalid parameter '{parameter}'. Allowed: {list(allowed_params)}"
+                }), 400
+
+            data = db_manager.get_insights_compare(profile_ids=profile_ids, parameter=parameter)
+            return jsonify(data), 200
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        except SQLAlchemyError as sqle:
+            logging.error(f"Database error in get_insights_compare: {sqle}")
+            return jsonify({"error": "Database service is temporarily unavailable. Please try again later."}), 503
+        except Exception as e:
+            logging.error(f"Error comparing profiles: {e}")
+            return jsonify({"error": "Failed to compare profiles."}), 500
 
     # =========================================================================
     # 6. MAP POINTS (Capped at 5000 with truncated flag)

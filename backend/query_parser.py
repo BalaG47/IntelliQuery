@@ -66,13 +66,17 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 
 from query_spec import (
+    BGC_PARAMETERS,
     Aggregation,
     BoundingBox,
+    ComparisonOperator,
     DataMode,
     GroupBy,
     Intent,
     MeasurementValues,
+    NumericFilter,
     Parameter,
+    ProfileDirection,
     QcFilter,
     QcScope,
     QuerySpec,
@@ -203,6 +207,10 @@ _PARAMETER_ALIASES = (
     (Parameter.PSAL, r"\bsalinit(?:y|ies)\b"),
     (Parameter.PRES, r"\bpressures?\b"),
     (Parameter.DOXY, r"\bdissolved oxygen\b|\boxygen\b|\bdoxy\b"),
+    (
+        Parameter.CHLA_FLUORESCENCE,
+        r"\bchlorophyll(?:-?a)?\s+fluorescence\b|\bchla[_ ]fluorescence\b",
+    ),
     (Parameter.CHLA, r"\bchlorophyll(?:-?a)?\b|\bchl-?a\b"),
     (
         Parameter.BBP700,
@@ -217,6 +225,11 @@ _AGGREGATION_ALIASES = (
     (Aggregation.MIN, r"\bminimum\b|\bmin\b"),
     (Aggregation.MAX, r"\bmaximum\b|\bmax\b"),
     (Aggregation.COUNT, r"\bcounts?\b"),
+)
+
+_BGC_EXTRA_AGGREGATION_ALIASES = (
+    (Aggregation.MEDIAN, r"\bmedian\b"),
+    (Aggregation.STDDEV, r"\bstandard\s+deviation\b|\bstddev\b|\bstd\s+dev\b"),
 )
 
 _UNSUPPORTED_AGGREGATIONS = (
@@ -400,6 +413,10 @@ class _Extraction:
     data_mode: DataMode | None = None
     values: MeasurementValues = MeasurementValues.RAW
     values_explicit: bool = False
+    has_bgc: bool | None = None
+    direction: ProfileDirection | None = None
+    float_level: bool = False
+    numeric_filter: NumericFilter | None = None
     aggregations: list[Aggregation] = field(default_factory=list)
     group_by: GroupBy | None = None
     sort_field: SortField | None = None
@@ -436,11 +453,18 @@ def _matches(text: str, patterns) -> bool:
 
 
 def _extract_parameters(text: str, ex: _Extraction) -> None:
-    found = {
-        parameter
-        for parameter, pattern in _PARAMETER_ALIASES
-        if re.search(pattern, text)
-    }
+    # Mask CHLA_FLUORESCENCE phrases before matching CHLA so "chlorophyll
+    # fluorescence" is not silently merged into CHLA.
+    chla_fluor_pattern = (
+        r"\bchlorophyll(?:-?a)?\s+fluorescence\b|\bchla[_ ]fluorescence\b"
+    )
+    masked_for_chla = re.sub(chla_fluor_pattern, " ", text)
+
+    found = set()
+    for parameter, pattern in _PARAMETER_ALIASES:
+        target = masked_for_chla if parameter is Parameter.CHLA else text
+        if re.search(pattern, target):
+            found.add(parameter)
     ex.parameters = [parameter for parameter in Parameter if parameter in found]
     if ex.parameters:
         ex.note(
@@ -450,6 +474,49 @@ def _extract_parameters(text: str, ex: _Extraction) -> None:
     if "oxygen" in text and Parameter.DOXY not in found:
         # Defensive: the alias list above already covers this case.
         ex.ambiguities.append("The term 'oxygen' is ambiguous.")
+
+
+def _extract_bgc_filter_and_direction(text: str, ex: _Extraction) -> None:
+    """Extract BGC vs core-only product filter and ascending/descending direction."""
+
+    asks_bgc = bool(re.search(r"\bbgc\b|\bbio-?geochemical\b", text))
+    asks_core_only = bool(
+        re.search(
+            r"\bcore[- ]only\b|\bnon[- ]bgc\b|\bcore\s+(?:argo\s+)?profiles?\b",
+            text,
+        )
+    )
+    if asks_bgc and asks_core_only and not _is_compare(text):
+        ex.ambiguities.append(
+            "Specify either BGC profiles or core-only profiles, not both in one filter."
+        )
+    elif asks_bgc:
+        ex.has_bgc = True
+        ex.note("product filter: BGC (has_bgc=True)")
+    elif asks_core_only:
+        ex.has_bgc = False
+        ex.note("product filter: core-only (has_bgc=False)")
+
+    asks_asc = bool(
+        re.search(
+            r"\bascending\b|\bdirection\s*(?:=|is)?\s*['\"]?a['\"]?\b", text
+        )
+    )
+    asks_desc = bool(
+        re.search(
+            r"\bdescending\b|\bdirection\s*(?:=|is)?\s*['\"]?d['\"]?\b", text
+        )
+    )
+    if asks_asc and asks_desc:
+        ex.ambiguities.append(
+            "Specify either ascending ('A') or descending ('D') direction, not both."
+        )
+    elif asks_asc:
+        ex.direction = ProfileDirection.ASCENDING
+        ex.note("direction: A (ascending)")
+    elif asks_desc:
+        ex.direction = ProfileDirection.DESCENDING
+        ex.note("direction: D (descending)")
 
 
 def _extract_wmos(text: str, ex: _Extraction) -> None:
@@ -1429,7 +1496,12 @@ def _extract_measurement_values(text: str, ex: _Extraction) -> None:
 
 
 def _extract_aggregations(text: str, ex: _Extraction) -> None:
+    has_bgc_param = any(p in BGC_PARAMETERS for p in ex.parameters)
+    bgc_supported_words = {"median", "standard deviation", "stddev"}
+
     for word in _UNSUPPORTED_AGGREGATIONS:
+        if has_bgc_param and word in bgc_supported_words:
+            continue
         if re.search(rf"\b{re.escape(word)}\b", text):
             ex.unsupported.append(
                 f"'{word}' aggregation is not supported; supported operations "
@@ -1437,9 +1509,13 @@ def _extract_aggregations(text: str, ex: _Extraction) -> None:
             )
             ex.note(f"unsupported aggregation requested: {word}")
 
+    aliases = list(_AGGREGATION_ALIASES)
+    if has_bgc_param:
+        aliases.extend(_BGC_EXTRA_AGGREGATION_ALIASES)
+
     found = {
         aggregation
-        for aggregation, pattern in _AGGREGATION_ALIASES
+        for aggregation, pattern in aliases
         if re.search(pattern, text)
     }
     found_ordered = [aggregation for aggregation in Aggregation if aggregation in found]
@@ -1448,6 +1524,113 @@ def _extract_aggregations(text: str, ex: _Extraction) -> None:
         ex.note(
             "aggregations: " + ", ".join(aggregation.value for aggregation in found)
         )
+
+
+_NUM_TOKEN = r"(-?\d+(?:\.\d+)?)"
+_INVALID_NUM_CUE = re.compile(
+    r"\b(?:exceeds?|above|greater\s+than|more\s+than|below|under|less\s+than|"
+    r"at\s+least|at\s+most|equal\s+to|equals|between)\s+"
+    r"(?!-?\d+(?:\.\d+)?\b)(?:nan|inf|infinity|[a-z_]+)\b"
+)
+
+
+def _extract_numeric_filter(text: str, ex: _Extraction) -> None:
+    """Extract numeric BGC comparison filters (Phase 3B).
+
+    Distinguishes measurement-level thresholds ("where DOXY exceeds 200")
+    from profile-level ("whose average DOXY exceeds 200") and float-level
+    ("floats with maximum BBP700 above 0.002") thresholds.
+    """
+    bgc_params = [p for p in ex.parameters if p in BGC_PARAMETERS]
+    if not bgc_params:
+        return
+
+    # Ignore pressure/latitude/longitude/cycle numeric ranges.
+    if re.search(r"\b(?:pressure|latitude|longitude|cycles?)\s+(?:between|from|above|below|exceeds|>|<)", text):
+        return
+
+    target_param = bgc_params[0]
+
+    # Check for invalid non-numeric threshold expressions on BGC queries.
+    if _INVALID_NUM_CUE.search(text):
+        # Avoid false positives on ordinary English like "between profiles" or "under qc".
+        if re.search(
+            r"\b(?:exceeds?|above|greater\s+than|more\s+than|below|under|less\s+than|"
+            r"at\s+least|at\s+most|equal\s+to|equals)\s+(?:nan|inf|infinity)\b",
+            text,
+        ) or re.search(
+            r"\b(?:between)\s+(?:nan|inf|infinity|[a-z]+)\s+and\s+",
+            text,
+        ):
+            ex.errors.append(
+                "Numeric comparison threshold must be a valid finite number."
+            )
+            return
+
+    op: ComparisonOperator | None = None
+    val1: float | None = None
+    val2: float | None = None
+    unit: str | None = None
+
+    m_between = re.search(
+        rf"\bbetween\s+{_NUM_TOKEN}\s+and\s+{_NUM_TOKEN}(?:\s*(micromole/kg|umol/kg|mg/m3|m-1))?",
+        text,
+    )
+    if m_between:
+        op = ComparisonOperator.BETWEEN
+        val1 = float(m_between.group(1))
+        val2 = float(m_between.group(2))
+        unit = m_between.group(3)
+        if val1 > val2:
+            ex.errors.append(
+                f"Invalid numeric range: lower bound ({val1}) cannot exceed upper bound ({val2})."
+            )
+            return
+    else:
+        patterns = (
+            (ComparisonOperator.GTE, rf"(?:\bat\s+least\b|>=)\s*{_NUM_TOKEN}"),
+            (ComparisonOperator.LTE, rf"(?:\bat\s+most\b|<=)\s*{_NUM_TOKEN}"),
+            (ComparisonOperator.GT, rf"(?:\bexceeds?\b|\babove\b|\bgreater\s+than\b|\bmore\s+than\b|>)\s*{_NUM_TOKEN}"),
+            (ComparisonOperator.LT, rf"(?:\bbelow\b|\bunder\b|\bless\s+than\b|\bfewer\s+than\b|<)\s*{_NUM_TOKEN}"),
+            (ComparisonOperator.EQ, rf"(?:\bequal\s+to\b|\bequals\b|=)\s*{_NUM_TOKEN}"),
+        )
+        for candidate_op, pat in patterns:
+            m = re.search(pat, text)
+            if m:
+                op = candidate_op
+                val1 = float(m.group(1))
+                break
+
+    if op is None or val1 is None:
+        return
+
+    # Determine scope: float vs profile vs measurement.
+    has_floats_word = bool(re.search(r"\b(?:floats?|wmos?)\b", text))
+    has_profiles_word = bool(re.search(r"\bprofiles?\b", text))
+    agg_for_scope: Aggregation | None = (
+        ex.aggregations[0] if ex.aggregations else None
+    )
+
+    if has_floats_word and not has_profiles_word:
+        scope = "float"
+        ex.float_level = True
+        if agg_for_scope is None:
+            agg_for_scope = Aggregation.MAX
+    elif agg_for_scope is not None and agg_for_scope is not Aggregation.COUNT:
+        scope = "profile"
+    else:
+        scope = "measurement"
+
+    ex.numeric_filter = NumericFilter(
+        parameter=target_param,
+        operator=op,
+        value=val1,
+        upper_value=val2,
+        scope=scope,
+        aggregation=agg_for_scope,
+        unit=unit,
+    )
+    ex.note(f"numeric_filter: {target_param.value} {op.value} {val1} (scope={scope})")
 
 
 def _extract_grouping(text: str, ex: _Extraction) -> None:
@@ -1739,21 +1922,26 @@ def _detect_intent(text: str, ex: _Extraction) -> Intent:
         and not re.search(r"\bqc\b|\bquality\b", text)
         and (
             re.search(
-                r"\b(?:which|what)\s+(?:floats?|profiles?)\s+(?:have|contain|include)\b",
+                r"\b(?:which|what)\s+(?:floats?|wmos?|profiles?)\s+(?:have|contain|include)\b",
                 text,
             )
             # Presence is only meant when the parameter itself follows the
             # cue ("profiles with salinity"), not when it is qualified by an
             # adjective the parser does not interpret.
             or re.search(
-                r"\b(?:floats?|profiles?)\s+(?:with|containing)\s+"
+                r"\b(?:floats?|wmos?|profiles?)\s+(?:with|containing|having)\s+"
                 r"(?:any\s+|all\s+|both\s+|the\s+)?(?:measured\s+)?"
-                r"(?:temperature|salinit(?:y|ies)|pressure|oxygen|"
-                r"chlorophyll(?:-?a)?|nitrate|ph|backscatter)\b",
+                r"(?:temperature|salinit(?:y|ies)|pressure|dissolved oxygen|oxygen|doxy|"
+                r"chlorophyll(?:-?a)?(?:\s+fluorescence)?|chl-?a|chla[_ ]fluorescence|"
+                r"nitrate|ph|backscatter(?:ing)?|bbp700)\b",
                 text,
             )
         )
     ):
+        if re.search(r"\b(?:floats?|wmos?)\b", text) and not re.search(
+            r"\bprofiles?\b", text
+        ):
+            ex.float_level = True
         return Intent.PARAMETER_AVAILABILITY
 
     if _matches(text, _COUNT_PROFILE_PATTERNS):
@@ -1761,6 +1949,9 @@ def _detect_intent(text: str, ex: _Extraction) -> Intent:
 
     if _matches(text, _ENUMERATE_FLOAT_PATTERNS):
         return Intent.ENUMERATE_FLOATS
+
+    if ex.numeric_filter is not None:
+        return Intent.LIST_PROFILES
 
     if ex.aggregations:
         return Intent.AGGREGATE
@@ -1812,6 +2003,8 @@ def _detect_intent(text: str, ex: _Extraction) -> Intent:
         or ex.qc_filter
         or ex.data_mode
         or ex.values_explicit
+        or ex.has_bgc is not None
+        or ex.direction is not None
         or ex.cycles
         or ex.limit is not None
         or ex.sort_field is not None
@@ -1896,9 +2089,11 @@ def parse_query(user_text: str) -> ParsedQuery:
     _extract_pressure_and_depth(text, ex)
     _extract_qc(text, ex)
     _extract_data_mode(text, ex)
+    _extract_bgc_filter_and_direction(text, ex)
     _extract_values(text, ex)
     _extract_measurement_values(text, ex)
     _extract_aggregations(text, ex)
+    _extract_numeric_filter(text, ex)
     _extract_grouping(text, ex)
     _extract_sort_and_limit(text, ex)
     _extract_qualitative_conditions(text, ex)
@@ -1948,6 +2143,10 @@ def parse_query(user_text: str) -> ParsedQuery:
         qc_filter=ex.qc_filter,
         data_mode=ex.data_mode,
         values=ex.values,
+        has_bgc=ex.has_bgc,
+        direction=ex.direction,
+        float_level=ex.float_level,
+        numeric_filter=ex.numeric_filter,
         aggregations=tuple(ex.aggregations),
         group_by=ex.group_by,
         sort=sort,

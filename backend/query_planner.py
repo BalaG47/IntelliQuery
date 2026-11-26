@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from query_spec import (
+    BGC_PARAMETERS,
     DEFAULT_LIST_LIMIT,
     MAX_AGGREGATE_PROFILE_SCAN,
     MAX_RESULT_LIMIT,
@@ -71,6 +72,7 @@ _BGC_PARAMETER_KEYS = {
     Parameter.BBP700: "BBP700",
     Parameter.NITRATE: "NITRATE",
     Parameter.PH_IN_SITU_TOTAL: "PH_IN_SITU_TOTAL",
+    Parameter.CHLA_FLUORESCENCE: "CHLA_FLUORESCENCE",
 }
 
 _PROFILE_QC_COLUMNS = {
@@ -87,6 +89,8 @@ TEMPLATE_IDS = (
     "profile_detail",
     "parameter_availability",
     "metadata_info",
+    "bgc_numeric_filter",
+    "bgc_calculation",
     "no_database_query",
 )
 
@@ -98,6 +102,8 @@ class PlanOperation(str, Enum):
     PROFILE_DETAIL = "profile_detail"
     PARAMETER_AVAILABILITY = "parameter_availability"
     METADATA_INFO = "metadata_info"
+    BGC_NUMERIC_FILTER = "bgc_numeric_filter"
+    BGC_CALCULATION = "bgc_calculation"
     NO_DATABASE_QUERY = "no_database_query"
     UNSUPPORTED = "unsupported"
 
@@ -110,6 +116,7 @@ class ResultShape(str, Enum):
     PROFILE_DETAIL = "profile_detail"
     AVAILABILITY_ROWS = "availability_rows"
     FLOAT_METADATA = "float_metadata"
+    BGC_CALCULATION = "bgc_calculation"
     NONE = "none"
 
 
@@ -211,6 +218,8 @@ def plan_validation(validation: ValidationResult, capabilities=None) -> QueryPla
             result_shape=ResultShape.NONE,
         )
     if spec.intent is Intent.COMPARE:
+        if spec.parameters and all(p in BGC_PARAMETERS for p in spec.parameters):
+            return _plan_bgc_calculation(spec, compare=True)
         return _unplan(
             "Comparison execution requires post-processing that is not part of "
             "Phase 3C-D; no SQL was generated."
@@ -258,6 +267,9 @@ def _has_any_filter(spec: QuerySpec) -> bool:
             spec.radius_search,
             spec.qc_filter,
             spec.data_mode,
+            spec.has_bgc is not None,
+            spec.direction is not None,
+            spec.numeric_filter is not None,
             spec.aggregations,
             spec.group_by,
         )
@@ -314,6 +326,15 @@ def _profile_filters(spec: QuerySpec) -> tuple[list[str], dict, list[str]]:
     if spec.data_mode is not None:
         clauses.append("p.data_mode = :data_mode")
         params["data_mode"] = spec.data_mode.value
+
+    if spec.has_bgc is True:
+        clauses.append("JSON_LENGTH(COALESCE(p.bgc_params, '{}')) > 0")
+    elif spec.has_bgc is False:
+        clauses.append("(p.bgc_params IS NULL OR JSON_LENGTH(p.bgc_params) = 0)")
+
+    if spec.direction is not None:
+        clauses.append("p.direction = :profile_direction")
+        params["profile_direction"] = spec.direction.value
 
     if spec.pressure_range is not None:
         unsupported.append(
@@ -454,6 +475,27 @@ def _plan_count_profiles(spec: QuerySpec) -> QueryPlan:
     if unsupported:
         return _unplan(" ".join(unsupported))
 
+    if spec.float_level:
+        limit = _limit_value(spec, default=MAX_RESULT_LIMIT)
+        params["limit"] = limit
+        sql = (
+            "SELECT DISTINCT f.float_id, f.wmo_number, f.project_name, f.platform_type "
+            "FROM argo_floats f "
+            "JOIN argo_profiles p ON f.float_id = p.float_id "
+            f"{_where(clauses)} "
+            "ORDER BY f.wmo_number ASC "
+            "LIMIT :limit"
+        )
+        return QueryPlan(
+            operation=PlanOperation.PARAMETER_AVAILABILITY,
+            template_id="parameter_availability",
+            supported=True,
+            sql=sql,
+            params=params,
+            limit=limit,
+            result_shape=ResultShape.FLOAT_ROWS,
+        )
+
     sql = (
         "SELECT COUNT(*) AS profile_count "
         "FROM argo_profiles p "
@@ -472,6 +514,9 @@ def _plan_count_profiles(spec: QuerySpec) -> QueryPlan:
 
 
 def _plan_list_profiles(spec: QuerySpec) -> QueryPlan:
+    if spec.numeric_filter is not None:
+        return _plan_bgc_numeric_filter(spec)
+
     if spec.aggregations or spec.group_by is not None:
         return _unplan(
             "Listing profiles cannot carry aggregations or grouping; use the "
@@ -482,6 +527,27 @@ def _plan_list_profiles(spec: QuerySpec) -> QueryPlan:
     if unsupported:
         return _unplan(" ".join(unsupported))
 
+    if spec.float_level:
+        limit = _limit_value(spec, default=MAX_RESULT_LIMIT)
+        params["limit"] = limit
+        sql = (
+            "SELECT DISTINCT f.float_id, f.wmo_number, f.project_name, f.platform_type "
+            "FROM argo_floats f "
+            "JOIN argo_profiles p ON f.float_id = p.float_id "
+            f"{_where(clauses)} "
+            "ORDER BY f.wmo_number ASC "
+            "LIMIT :limit"
+        )
+        return QueryPlan(
+            operation=PlanOperation.PARAMETER_AVAILABILITY,
+            template_id="parameter_availability",
+            supported=True,
+            sql=sql,
+            params=params,
+            limit=limit,
+            result_shape=ResultShape.FLOAT_ROWS,
+        )
+
     limit = _limit_value(spec)
     params["limit"] = limit
     level_column = (
@@ -491,7 +557,7 @@ def _plan_list_profiles(spec: QuerySpec) -> QueryPlan:
     )
     sql = (
         "SELECT p.profile_id, f.wmo_number, p.cycle_number, p.profile_time, "
-        "p.latitude, p.longitude, p.data_mode, "
+        "p.latitude, p.longitude, p.data_mode, p.direction, "
         f"JSON_LENGTH(COALESCE(p.{level_column}, '[]')) AS level_count "
         "FROM argo_profiles p "
         "JOIN argo_floats f ON p.float_id = f.float_id "
@@ -523,6 +589,27 @@ def _plan_profile_detail(spec: QuerySpec) -> QueryPlan:
     if unsupported:
         return _unplan(" ".join(unsupported))
 
+    if spec.float_level:
+        limit = _limit_value(spec, default=MAX_RESULT_LIMIT)
+        params["limit"] = limit
+        sql = (
+            "SELECT DISTINCT f.float_id, f.wmo_number, f.project_name, f.platform_type "
+            "FROM argo_floats f "
+            "JOIN argo_profiles p ON f.float_id = p.float_id "
+            f"{_where(clauses)} "
+            "ORDER BY f.wmo_number ASC "
+            "LIMIT :limit"
+        )
+        return QueryPlan(
+            operation=PlanOperation.PARAMETER_AVAILABILITY,
+            template_id="parameter_availability",
+            supported=True,
+            sql=sql,
+            params=params,
+            limit=limit,
+            result_shape=ResultShape.FLOAT_ROWS,
+        )
+
     if spec.values is MeasurementValues.ADJUSTED:
         measurement_columns = (
             "p.pressure_adjusted, p.pressure_adjusted_qc, "
@@ -540,9 +627,10 @@ def _plan_profile_detail(spec: QuerySpec) -> QueryPlan:
     params["limit"] = limit
     sql = (
         "SELECT p.profile_id, f.wmo_number, p.cycle_number, p.profile_time, "
-        "p.latitude, p.longitude, p.data_mode, "
+        "p.latitude, p.longitude, p.data_mode, p.direction, "
         "p.profile_pres_qc, p.profile_temp_qc, p.profile_psal_qc, "
-        "p.parameter_data_mode, p.source_file, p.source_file_sha256, "
+        "p.parameter_data_mode, p.bgc_pressure, p.bgc_source_metadata, "
+        "p.source_file, p.source_file_sha256, "
         f"{measurement_columns} "
         "FROM argo_profiles p "
         "JOIN argo_floats f ON p.float_id = f.float_id "
@@ -570,6 +658,27 @@ def _plan_parameter_availability(spec: QuerySpec) -> QueryPlan:
     clauses, params, unsupported = _profile_filters(spec)
     if unsupported:
         return _unplan(" ".join(unsupported))
+
+    if spec.float_level:
+        limit = _limit_value(spec, default=MAX_RESULT_LIMIT)
+        params["limit"] = limit
+        sql = (
+            "SELECT DISTINCT f.float_id, f.wmo_number, f.project_name, f.platform_type "
+            "FROM argo_floats f "
+            "JOIN argo_profiles p ON f.float_id = p.float_id "
+            f"{_where(clauses)} "
+            "ORDER BY f.wmo_number ASC "
+            "LIMIT :limit"
+        )
+        return QueryPlan(
+            operation=PlanOperation.PARAMETER_AVAILABILITY,
+            template_id="parameter_availability",
+            supported=True,
+            sql=sql,
+            params=params,
+            limit=limit,
+            result_shape=ResultShape.FLOAT_ROWS,
+        )
 
     selects = []
     for parameter in spec.parameters:
@@ -661,8 +770,104 @@ def _plan_metadata_info(spec: QuerySpec) -> QueryPlan:
     )
 
 
+def _plan_bgc_numeric_filter(spec: QuerySpec) -> QueryPlan:
+    """Plan a bounded BGC SQL fetch for Phase 3B numeric threshold post-filtering."""
+    nf = spec.numeric_filter
+    assert nf is not None
+    if nf.parameter not in BGC_PARAMETERS:
+        return _unplan(
+            "Numeric measurement filtering is only supported for BGC parameters."
+        )
+
+    clauses, params, unsupported = _profile_filters(spec)
+    if unsupported:
+        return _unplan(" ".join(unsupported))
+
+    json_col = (
+        "p.bgc_adjusted"
+        if spec.values is MeasurementValues.ADJUSTED
+        else "p.bgc_params"
+    )
+    key = _BGC_PARAMETER_KEYS[nf.parameter]
+    clauses.append(f"JSON_CONTAINS_PATH({json_col}, 'one', :nf_json_path)")
+    params["nf_json_path"] = f"$.{key}"
+
+    scan_limit = MAX_AGGREGATE_PROFILE_SCAN
+    params["scan_limit"] = scan_limit
+    sql = (
+        "SELECT p.profile_id, f.wmo_number, p.cycle_number, p.profile_time, "
+        "p.latitude, p.longitude, p.data_mode, p.direction, "
+        "p.bgc_pressure, p.bgc_params, p.bgc_qc, p.bgc_adjusted, "
+        "p.bgc_adjusted_qc, p.bgc_source_metadata "
+        "FROM argo_profiles p "
+        "JOIN argo_floats f ON p.float_id = f.float_id "
+        f"{_where(clauses)} "
+        f"ORDER BY {_order_clause(spec)} "
+        "LIMIT :scan_limit"
+    )
+    result_shape = (
+        ResultShape.FLOAT_ROWS if nf.scope == "float" else ResultShape.PROFILE_ROWS
+    )
+    return QueryPlan(
+        operation=PlanOperation.BGC_NUMERIC_FILTER,
+        template_id="bgc_numeric_filter",
+        supported=True,
+        sql=sql,
+        params=params,
+        limit=_limit_value(spec),
+        scan_limit=scan_limit,
+        result_shape=result_shape,
+        post_processing=("bgc_numeric_filter",),
+    )
+
+
+def _plan_bgc_calculation(spec: QuerySpec, *, compare: bool = False) -> QueryPlan:
+    """Plan a bounded BGC SQL fetch for Phase 3A/3B statistical calculations."""
+    clauses, params, unsupported = _profile_filters(spec)
+    if unsupported:
+        return _unplan(" ".join(unsupported))
+
+    json_col = (
+        "p.bgc_adjusted"
+        if spec.values is MeasurementValues.ADJUSTED
+        else "p.bgc_params"
+    )
+    for idx, param in enumerate(spec.parameters):
+        key = _BGC_PARAMETER_KEYS[param]
+        pname = f"bgc_calc_path_{idx}"
+        clauses.append(f"JSON_CONTAINS_PATH({json_col}, 'one', :{pname})")
+        params[pname] = f"$.{key}"
+
+    scan_limit = MAX_AGGREGATE_PROFILE_SCAN
+    params["scan_limit"] = scan_limit
+    sql = (
+        "SELECT p.profile_id, f.wmo_number, p.cycle_number, p.profile_time, "
+        "p.latitude, p.longitude, p.data_mode, p.direction, "
+        "p.bgc_pressure, p.bgc_params, p.bgc_qc, p.bgc_adjusted, "
+        "p.bgc_adjusted_qc, p.bgc_source_metadata "
+        "FROM argo_profiles p "
+        "JOIN argo_floats f ON p.float_id = f.float_id "
+        f"{_where(clauses)} "
+        f"ORDER BY {_order_clause(spec)} "
+        "LIMIT :scan_limit"
+    )
+    return QueryPlan(
+        operation=PlanOperation.BGC_CALCULATION,
+        template_id="bgc_calculation",
+        supported=True,
+        sql=sql,
+        params=params,
+        limit=spec.limit,
+        scan_limit=scan_limit,
+        result_shape=ResultShape.BGC_CALCULATION,
+        post_processing=("bgc_compare" if compare else "bgc_calculate",),
+    )
+
+
 def _plan_aggregate(spec: QuerySpec) -> QueryPlan:
     if any(operation is not Aggregation.COUNT for operation in spec.aggregations):
+        if spec.parameters and all(p in BGC_PARAMETERS for p in spec.parameters):
+            return _plan_bgc_calculation(spec, compare=False)
         return _unplan(
             "MEAN, MIN and MAX require per-level JSON post-processing, which "
             "Phase 3C-D does not implement; only COUNT is plannable."
@@ -671,6 +876,27 @@ def _plan_aggregate(spec: QuerySpec) -> QueryPlan:
     clauses, params, unsupported = _profile_filters(spec)
     if unsupported:
         return _unplan(" ".join(unsupported))
+
+    if spec.float_level:
+        limit = _limit_value(spec, default=MAX_RESULT_LIMIT)
+        params["limit"] = limit
+        sql = (
+            "SELECT DISTINCT f.float_id, f.wmo_number, f.project_name, f.platform_type "
+            "FROM argo_floats f "
+            "JOIN argo_profiles p ON f.float_id = p.float_id "
+            f"{_where(clauses)} "
+            "ORDER BY f.wmo_number ASC "
+            "LIMIT :limit"
+        )
+        return QueryPlan(
+            operation=PlanOperation.PARAMETER_AVAILABILITY,
+            template_id="parameter_availability",
+            supported=True,
+            sql=sql,
+            params=params,
+            limit=limit,
+            result_shape=ResultShape.FLOAT_ROWS,
+        )
 
     if spec.group_by is not None:
         group_expressions = {

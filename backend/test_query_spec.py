@@ -119,11 +119,12 @@ class ModelTests(unittest.TestCase):
             "BBP700",
             "NITRATE",
             "PH_IN_SITU_TOTAL",
+            "CHLA_FLUORESCENCE",
         }
         self.assertEqual({member.value for member in Parameter}, expected)
         self.assertIs(Parameter("TEMP"), Parameter.TEMP)
         self.assertEqual(CORE_PARAMETERS, {Parameter.TEMP, Parameter.PSAL, Parameter.PRES})
-        self.assertEqual(len(BGC_PARAMETERS), 5)
+        self.assertEqual(len(BGC_PARAMETERS), 6)
         self.assertEqual(CORE_PARAMETERS | BGC_PARAMETERS, APPLICATION_PARAMETERS)
         self.assertIs(MeasurementValues("raw"), MeasurementValues.RAW)
         self.assertEqual(DataMode.REAL_TIME.value, "R")
@@ -535,7 +536,7 @@ class AggregationTests(unittest.TestCase):
     def test_unsupported_aggregation_is_rejected(self):
         result = validate(
             intent=Intent.AGGREGATE, parameters=(Parameter.TEMP,),
-            aggregations=("MEDIAN",),
+            aggregations=("PERCENTILE",),
         )
         self.assertEqual(result.status, ValidationStatus.INVALID)
 

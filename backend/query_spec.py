@@ -70,6 +70,7 @@ class Parameter(str, Enum):
     BBP700 = "BBP700"
     NITRATE = "NITRATE"
     PH_IN_SITU_TOTAL = "PH_IN_SITU_TOTAL"
+    CHLA_FLUORESCENCE = "CHLA_FLUORESCENCE"
 
 
 CORE_PARAMETERS = frozenset(
@@ -83,6 +84,7 @@ BGC_PARAMETERS = frozenset(
         Parameter.BBP700,
         Parameter.NITRATE,
         Parameter.PH_IN_SITU_TOTAL,
+        Parameter.CHLA_FLUORESCENCE,
     }
 )
 
@@ -92,12 +94,38 @@ APPLICATION_PARAMETERS = frozenset(Parameter)
 
 
 class Aggregation(str, Enum):
-    """Value operations that Phase 3C-D will be able to execute."""
+    """Value operations that Phase 3C-D / Phase 3 can execute."""
 
     COUNT = "COUNT"
     MEAN = "MEAN"
     MIN = "MIN"
     MAX = "MAX"
+    MEDIAN = "MEDIAN"
+    STDDEV = "STDDEV"
+
+
+class ComparisonOperator(str, Enum):
+    """Numeric comparison operators for Phase 3B BGC threshold queries."""
+
+    GT = ">"
+    LT = "<"
+    GTE = ">="
+    LTE = "<="
+    EQ = "="
+    BETWEEN = "between"
+
+
+@dataclass(frozen=True)
+class NumericFilter:
+    """Validated numeric threshold or range filter on a parameter."""
+
+    parameter: Parameter
+    operator: ComparisonOperator
+    value: float
+    upper_value: float | None = None
+    scope: str = "measurement"  # "measurement", "profile", or "float"
+    aggregation: Aggregation | None = None
+    unit: str | None = None
 
 
 class GroupBy(str, Enum):
@@ -137,6 +165,13 @@ class DataMode(str, Enum):
 
     REAL_TIME = "R"
     DELAYED = "D"
+
+
+class ProfileDirection(str, Enum):
+    """Profile vertical trajectory direction."""
+
+    ASCENDING = "A"
+    DESCENDING = "D"
 
 
 class MeasurementValues(str, Enum):
@@ -377,6 +412,18 @@ class QuerySpec:
     qc_filter: QcFilter | None = None
     data_mode: DataMode | None = None
     values: MeasurementValues = MeasurementValues.RAW
+
+    #: Optional BGC product filter: True = BGC profiles, False = core-only.
+    has_bgc: bool | None = None
+
+    #: Optional trajectory direction filter ('A' ascending, 'D' descending).
+    direction: ProfileDirection | None = None
+
+    #: True when parameter availability targets distinct floats rather than profiles.
+    float_level: bool = False
+
+    #: Optional numeric threshold / range filter (Phase 3B).
+    numeric_filter: NumericFilter | None = None
 
     aggregations: tuple[Aggregation, ...] = ()
     group_by: GroupBy | None = None
@@ -978,9 +1025,77 @@ def validate_spec(
                 "metres is not converted automatically."
             )
 
-    # --- measurement selection and mode -----------------------------------
+    # --- measurement selection, mode, BGC filter & direction --------------
     if spec.data_mode is not None and _coerce_enum(spec.data_mode, DataMode) is None:
         errors.append("Data mode must be 'R' (real-time) or 'D' (delayed).")
+
+    if spec.has_bgc is not None and not isinstance(spec.has_bgc, bool):
+        errors.append("BGC filter (has_bgc) must be True, False, or None.")
+
+    if spec.has_bgc is False and any(p in BGC_PARAMETERS for p in parameters):
+        errors.append(
+            "Core-only filter (has_bgc=False) cannot be combined with BGC parameters."
+        )
+
+    normalised_direction = None
+    if spec.direction is not None:
+        normalised_direction = _coerce_enum(spec.direction, ProfileDirection)
+        if normalised_direction is None:
+            errors.append(
+                "Profile direction must be 'A' (ascending) or 'D' (descending)."
+            )
+
+    if not isinstance(spec.float_level, bool):
+        errors.append("float_level must be a boolean.")
+
+    normalised_numeric_filter = None
+    if spec.numeric_filter is not None:
+        nf = spec.numeric_filter
+        if not isinstance(nf, NumericFilter):
+            errors.append("numeric_filter must be a NumericFilter instance.")
+        else:
+            nf_param = _coerce_enum(nf.parameter, Parameter)
+            nf_op = _coerce_enum(nf.operator, ComparisonOperator)
+            nf_agg = (
+                _coerce_enum(nf.aggregation, Aggregation)
+                if nf.aggregation is not None
+                else None
+            )
+            if nf_param is None:
+                errors.append("numeric_filter parameter is not supported.")
+            if nf_op is None:
+                errors.append("numeric_filter operator is not supported.")
+            if not _is_number(nf.value):
+                errors.append("numeric_filter value must be a finite number.")
+            if nf_op is ComparisonOperator.BETWEEN:
+                if not _is_number(nf.upper_value):
+                    errors.append(
+                        "BETWEEN numeric_filter requires a finite upper_value."
+                    )
+                elif _is_number(nf.value) and float(nf.value) > float(nf.upper_value):
+                    errors.append(
+                        "BETWEEN lower bound cannot exceed upper bound."
+                    )
+            if nf.scope not in ("measurement", "profile", "float"):
+                errors.append(
+                    "numeric_filter scope must be 'measurement', 'profile', or 'float'."
+                )
+            if nf.aggregation is not None and nf_agg is None:
+                errors.append("numeric_filter aggregation is not supported.")
+            if not errors:
+                normalised_numeric_filter = NumericFilter(
+                    parameter=nf_param,
+                    operator=nf_op,
+                    value=float(nf.value),
+                    upper_value=(
+                        float(nf.upper_value)
+                        if nf.upper_value is not None
+                        else None
+                    ),
+                    scope=nf.scope,
+                    aggregation=nf_agg,
+                    unit=nf.unit,
+                )
 
     errors.extend(_validate_values(spec.values))
     if _coerce_enum(spec.values, MeasurementValues) is MeasurementValues.ADJUSTED and not parameters:
@@ -1054,6 +1169,10 @@ def validate_spec(
                 spec.radius_search,
                 spec.qc_filter,
                 spec.data_mode,
+                spec.has_bgc is not None,
+                spec.direction is not None,
+                spec.float_level,
+                spec.numeric_filter is not None,
                 aggregations,
                 spec.group_by,
             ]
@@ -1067,10 +1186,15 @@ def validate_spec(
         errors.append("An aggregate query requires at least one operation.")
 
     if intent is Intent.COMPARE:
-        if len(wmo_numbers) < 2 and len(parameters) < 2:
+        if (
+            len(wmo_numbers) < 2
+            and len(cycle_numbers) < 2
+            and len(parameters) < 2
+            and not (len(parameters) == 1 and parameters[0] in BGC_PARAMETERS)
+        ):
             errors.append(
-                "A comparison requires at least two distinct WMO numbers or "
-                "at least two parameters."
+                "A comparison requires at least two distinct WMO numbers, "
+                "cycle numbers, or parameters."
             )
 
     if intent is Intent.PARAMETER_AVAILABILITY and not parameters:
@@ -1112,6 +1236,10 @@ def validate_spec(
             if spec.data_mode is None
             else _coerce_enum(spec.data_mode, DataMode)
         ),
+        has_bgc=spec.has_bgc,
+        direction=normalised_direction,
+        float_level=spec.float_level,
+        numeric_filter=normalised_numeric_filter,
         pressure_range=_to_tuple(spec.pressure_range),
         depth_range_m=_to_tuple(spec.depth_range_m),
         notes=_to_tuple(spec.notes),

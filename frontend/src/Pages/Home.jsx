@@ -17,19 +17,19 @@ const Home = () => {
   }, [showVisualization]);
 
   return (
-    <div className="bg-app min-h-screen text-primary flex flex-col">
+    <div className="bg-app min-h-screen lg:h-screen lg:overflow-hidden text-primary flex flex-col">
       <Navbar />
       <Sidebar />
 
-      <main className="lg:ml-60 ml-0 pt-16 p-3 sm:p-4 flex-1 flex flex-col min-w-0 h-[calc(100vh-4rem)]">
+      <main className="lg:ml-60 ml-0 pt-16 p-3 sm:p-4 flex-1 flex flex-col min-w-0 min-h-0">
         <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0">
           {/* Left Panel (Chat) */}
-          <div className="flex-1 flex flex-col min-w-0 min-h-[460px] lg:min-h-0">
+          <div className="flex-1 flex flex-col min-w-0 min-h-[460px] lg:min-h-0 lg:h-full">
             <ChatWindow onFirstMessage={() => setShowVisualization(true)} />
           </div>
 
-          {/* Right Panel (Visualization Container) */}
-          <div className="w-full lg:w-96 xl:w-[460px] shrink-0 bg-surface-0 border border-subtle rounded-[3px] p-4 flex flex-col items-center justify-center overflow-y-auto">
+          {/* Right Panel (Visualization Container — fixed/sticky on desktop) */}
+          <div className="w-full lg:w-96 xl:w-[460px] shrink-0 lg:sticky lg:top-20 lg:h-full bg-surface-0 border border-subtle rounded-[3px] p-4 flex flex-col items-center justify-center overflow-y-auto">
             {/* Placeholder text */}
             {!showVisualization && (
               <div className="text-center p-6">

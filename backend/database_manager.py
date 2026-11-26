@@ -969,13 +969,19 @@ vary with depth at the recorded geographic location and time.
 
     def get_data_overview(self):
         """
-        Retrieves global summary metrics for the dataset.
+        Retrieves global summary metrics for the dataset, including Core/BGC breakdown.
         """
+        from bgc_calculations import BGC_PARAMETER_UNITS
+
         with self.mysql_engine.connect() as conn:
             row = conn.execute(text("""
                 SELECT 
                     (SELECT COUNT(*) FROM argo_floats) as total_floats,
                     COUNT(p.profile_id) as total_profiles,
+                    SUM(CASE WHEN p.bgc_params IS NOT NULL AND JSON_LENGTH(p.bgc_params) > 0 THEN 1 ELSE 0 END) as bgc_profiles,
+                    SUM(CASE WHEN p.bgc_params IS NULL OR JSON_LENGTH(p.bgc_params) = 0 THEN 1 ELSE 0 END) as core_only_profiles,
+                    SUM(CASE WHEN p.direction = 'A' THEN 1 ELSE 0 END) as asc_profiles,
+                    SUM(CASE WHEN p.direction = 'D' THEN 1 ELSE 0 END) as desc_profiles,
                     MIN(p.profile_time) as min_date,
                     MAX(p.profile_time) as max_date,
                     MIN(p.latitude) as min_lat,
@@ -985,6 +991,27 @@ vary with depth at the recorded geographic location and time.
                 FROM argo_profiles p
             """)).mappings().fetchone()
 
+            bgc_key_rows = conn.execute(text(
+                "SELECT JSON_KEYS(bgc_params) AS keys_json "
+                "FROM argo_profiles WHERE bgc_params IS NOT NULL AND JSON_LENGTH(bgc_params) > 0"
+            )).scalars().all()
+
+            param_counts = {}
+            for raw_keys in bgc_key_rows:
+                keys = json.loads(raw_keys) if isinstance(raw_keys, str) else raw_keys
+                if isinstance(keys, list):
+                    for k in keys:
+                        param_counts[k] = param_counts.get(k, 0) + 1
+
+            available_bgc_parameters = [
+                {
+                    "parameter": param,
+                    "unit": BGC_PARAMETER_UNITS.get(param, "unknown"),
+                    "profile_count": count,
+                }
+                for param, count in sorted(param_counts.items())
+            ]
+
             projs_rows = conn.execute(text("SELECT DISTINCT project_name FROM argo_floats")).scalars().all()
             platforms_rows = conn.execute(text("SELECT DISTINCT platform_type FROM argo_floats")).scalars().all()
 
@@ -993,10 +1020,20 @@ vary with depth at the recorded geographic location and time.
 
             proj_recorded = len(proj_vals) > 0 and not all(p in ('N/A', 'NA', '') for p in proj_vals)
             plat_recorded = len(plat_vals) > 0 and not all(p in ('N/A', 'NA', '') for p in plat_vals)
-            
+
+            total_profiles = int(row["total_profiles"] or 0)
+            bgc_profiles = int(row["bgc_profiles"] or 0)
+            core_only_profiles = int(row["core_only_profiles"] or 0)
+
             return {
                 "total_floats": int(row["total_floats"] or 0),
-                "total_profiles": int(row["total_profiles"] or 0),
+                "total_profiles": total_profiles,
+                "bgc_profiles": bgc_profiles,
+                "core_only_profiles": core_only_profiles,
+                "direction_counts": {
+                    "A": int(row["asc_profiles"] or 0),
+                    "D": int(row["desc_profiles"] or 0),
+                },
                 "date_range": {
                     "min": row["min_date"].isoformat() if row["min_date"] else None,
                     "max": row["max_date"].isoformat() if row["max_date"] else None
@@ -1011,8 +1048,10 @@ vary with depth at the recorded geographic location and time.
                     "pressure": True,
                     "temperature": True,
                     "salinity": True,
-                    "bgc": False
+                    "bgc": bgc_profiles > 0,
+                    "bgc_parameters": [item["parameter"] for item in available_bgc_parameters],
                 },
+                "available_bgc_parameters": available_bgc_parameters,
                 "projects": {
                     "recorded": proj_recorded,
                     "values": proj_vals
@@ -1021,9 +1060,9 @@ vary with depth at the recorded geographic location and time.
                     "recorded": plat_recorded,
                     "values": plat_vals
                 },
-                "data_mode": "raw_unadjusted",
-                "qc_flags": "unavailable",
-                "version": "1.0"
+                "data_mode": "raw_and_adjusted",
+                "qc_flags": "available_per_profile",
+                "version": "1.1"
             }
 
     def get_floats_paginated(self, page=1, limit=20, search=None, sort_by="wmo_number", sort_dir="asc"):
@@ -1148,7 +1187,8 @@ vary with depth at the recorded geographic location and time.
 
     def _build_profile_filters(self, wmo_number=None, profile_id=None, cycle_number=None,
                                start_date=None, end_date=None, min_lat=None, max_lat=None,
-                               min_lon=None, max_lon=None):
+                               min_lon=None, max_lon=None, profile_type=None,
+                               parameter=None, direction=None):
         where_clauses = []
         params = {}
         if wmo_number is not None:
@@ -1178,12 +1218,27 @@ vary with depth at the recorded geographic location and time.
         if max_lon is not None:
             where_clauses.append("p.longitude <= :max_lon")
             params["max_lon"] = max_lon
+        if profile_type == "bgc":
+            where_clauses.append("p.bgc_params IS NOT NULL AND JSON_LENGTH(p.bgc_params) > 0")
+        elif profile_type == "core":
+            where_clauses.append("(p.bgc_params IS NULL OR JSON_LENGTH(p.bgc_params) = 0)")
+        if parameter is not None:
+            if parameter in ("TEMP", "PSAL", "PRES"):
+                col = {"TEMP": "temperature", "PSAL": "salinity", "PRES": "pressure"}[parameter]
+                where_clauses.append(f"p.{col} IS NOT NULL AND JSON_LENGTH(p.{col}) > 0")
+            else:
+                where_clauses.append("JSON_CONTAINS_PATH(p.bgc_params, 'one', :param_json_path)")
+                params["param_json_path"] = f"$.{parameter}"
+        if direction is not None:
+            where_clauses.append("p.direction = :direction")
+            params["direction"] = direction
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         return where_sql, params
 
     def get_profiles_paginated(self, page=1, limit=20, wmo_number=None, profile_id=None,
                                cycle_number=None, start_date=None, end_date=None,
                                min_lat=None, max_lat=None, min_lon=None, max_lon=None,
+                               profile_type=None, parameter=None, direction=None,
                                sort_by="profile_time", sort_dir="desc"):
         """
         Retrieves paginated profiles without JSON measurement arrays.
@@ -1194,7 +1249,8 @@ vary with depth at the recorded geographic location and time.
             "cycle_number": "p.cycle_number",
             "latitude": "p.latitude",
             "longitude": "p.longitude",
-            "wmo_number": "f.wmo_number"
+            "wmo_number": "f.wmo_number",
+            "direction": "p.direction",
         }
         order_col = allowed_sorts.get(sort_by, "p.profile_time")
         order_dir = "DESC" if str(sort_dir).lower() == "desc" else "ASC"
@@ -1206,7 +1262,8 @@ vary with depth at the recorded geographic location and time.
         where_sql, params = self._build_profile_filters(
             wmo_number=wmo_number, profile_id=profile_id, cycle_number=cycle_number,
             start_date=start_date, end_date=end_date, min_lat=min_lat, max_lat=max_lat,
-            min_lon=min_lon, max_lon=max_lon
+            min_lon=min_lon, max_lon=max_lon, profile_type=profile_type,
+            parameter=parameter, direction=direction,
         )
         
         with self.mysql_engine.connect() as conn:
@@ -1228,10 +1285,13 @@ vary with depth at the recorded geographic location and time.
                     p.float_id,
                     f.wmo_number,
                     p.cycle_number,
+                    p.direction,
+                    p.data_mode,
                     p.profile_time,
                     p.latitude,
                     p.longitude,
-                    JSON_LENGTH(p.pressure) AS level_count
+                    JSON_LENGTH(p.pressure) AS level_count,
+                    JSON_KEYS(p.bgc_params) AS bgc_param_keys
                 FROM argo_profiles p
                 JOIN argo_floats f ON p.float_id = f.float_id
                 {where_sql}
@@ -1242,11 +1302,20 @@ vary with depth at the recorded geographic location and time.
             
             profiles = []
             for r in rows:
+                raw_keys = r["bgc_param_keys"]
+                bgc_keys = json.loads(raw_keys) if isinstance(raw_keys, str) else (raw_keys or [])
+                bgc_keys = sorted(str(k) for k in bgc_keys) if isinstance(bgc_keys, list) else []
+                has_bgc = len(bgc_keys) > 0
                 profiles.append({
                     "profile_id": r["profile_id"],
                     "float_id": r["float_id"],
                     "wmo_number": r["wmo_number"],
                     "cycle_number": r["cycle_number"],
+                    "direction": r["direction"],
+                    "data_mode": r["data_mode"],
+                    "has_bgc": has_bgc,
+                    "profile_type": "BGC" if has_bgc else "Core",
+                    "bgc_parameters": bgc_keys,
                     "profile_time": r["profile_time"].isoformat() if r["profile_time"] else None,
                     "latitude": float(r["latitude"]) if r["latitude"] is not None else None,
                     "longitude": float(r["longitude"]) if r["longitude"] is not None else None,
@@ -1266,8 +1335,11 @@ vary with depth at the recorded geographic location and time.
 
     def get_profile_by_id(self, profile_id):
         """
-        Retrieves a single profile including its measurement arrays.
+        Retrieves a single profile including core and BGC measurement arrays.
+        Core pressure and BGC pressure are returned separately and never merged.
         """
+        from bgc_calculations import BGC_PARAMETER_UNITS, extract_valid_bgc_series
+
         with self.mysql_engine.connect() as conn:
             row = conn.execute(text("""
                 SELECT 
@@ -1277,12 +1349,27 @@ vary with depth at the recorded geographic location and time.
                     f.project_name,
                     f.platform_type,
                     p.cycle_number,
+                    p.direction,
+                    p.data_mode,
+                    p.parameter_data_mode,
+                    p.profile_pres_qc,
+                    p.profile_temp_qc,
+                    p.profile_psal_qc,
                     p.profile_time,
                     p.latitude,
                     p.longitude,
                     p.pressure,
+                    p.pressure_qc,
                     p.temperature,
-                    p.salinity
+                    p.temperature_qc,
+                    p.salinity,
+                    p.salinity_qc,
+                    p.bgc_pressure,
+                    p.bgc_params,
+                    p.bgc_qc,
+                    p.bgc_adjusted,
+                    p.bgc_adjusted_qc,
+                    p.bgc_source_metadata
                 FROM argo_profiles p
                 JOIN argo_floats f ON p.float_id = f.float_id
                 WHERE p.profile_id = :pid
@@ -1291,10 +1378,45 @@ vary with depth at the recorded geographic location and time.
             if not row:
                 return None
                 
-            p_arr = json.loads(row["pressure"]) if row["pressure"] else []
-            t_arr = json.loads(row["temperature"]) if row["temperature"] else []
-            s_arr = json.loads(row["salinity"]) if row["salinity"] else []
-            
+            p_arr = json.loads(row["pressure"]) if isinstance(row["pressure"], str) else (row["pressure"] or [])
+            t_arr = json.loads(row["temperature"]) if isinstance(row["temperature"], str) else (row["temperature"] or [])
+            s_arr = json.loads(row["salinity"]) if isinstance(row["salinity"], str) else (row["salinity"] or [])
+            p_qc = json.loads(row["pressure_qc"]) if isinstance(row["pressure_qc"], str) else (row["pressure_qc"] or [])
+            t_qc = json.loads(row["temperature_qc"]) if isinstance(row["temperature_qc"], str) else (row["temperature_qc"] or [])
+            s_qc = json.loads(row["salinity_qc"]) if isinstance(row["salinity_qc"], str) else (row["salinity_qc"] or [])
+
+            bgc_pres = json.loads(row["bgc_pressure"]) if isinstance(row["bgc_pressure"], str) else (row["bgc_pressure"] or [])
+            bgc_params_dict = json.loads(row["bgc_params"]) if isinstance(row["bgc_params"], str) else (row["bgc_params"] or {})
+            bgc_qc_dict = json.loads(row["bgc_qc"]) if isinstance(row["bgc_qc"], str) else (row["bgc_qc"] or {})
+            bgc_adj_dict = json.loads(row["bgc_adjusted"]) if isinstance(row["bgc_adjusted"], str) else (row["bgc_adjusted"] or {})
+            bgc_adj_qc_dict = json.loads(row["bgc_adjusted_qc"]) if isinstance(row["bgc_adjusted_qc"], str) else (row["bgc_adjusted_qc"] or {})
+            param_modes = json.loads(row["parameter_data_mode"]) if isinstance(row["parameter_data_mode"], str) else (row["parameter_data_mode"] or {})
+            bgc_src_meta = json.loads(row["bgc_source_metadata"]) if isinstance(row["bgc_source_metadata"], str) else row["bgc_source_metadata"]
+
+            bgc_parameters_detail = {}
+            bgc_keys = sorted(bgc_params_dict.keys()) if isinstance(bgc_params_dict, dict) else []
+            row_dict = dict(row)
+            for param_key in bgc_keys:
+                raw_vals = bgc_params_dict.get(param_key) or []
+                _, _, counts, warnings = extract_valid_bgc_series(row_dict, param_key)
+                bgc_parameters_detail[param_key] = {
+                    "values": raw_vals,
+                    "qc": bgc_qc_dict.get(param_key) if isinstance(bgc_qc_dict, dict) else None,
+                    "adjusted": bgc_adj_dict.get(param_key) if isinstance(bgc_adj_dict, dict) else None,
+                    "adjusted_qc": bgc_adj_qc_dict.get(param_key) if isinstance(bgc_adj_qc_dict, dict) else None,
+                    "unit": BGC_PARAMETER_UNITS.get(param_key, "unknown"),
+                    "data_mode": param_modes.get(param_key) if isinstance(param_modes, dict) else row["data_mode"],
+                    "valid_count": counts["valid"],
+                    "missing_count": counts["missing"],
+                    "total_count": counts["total"],
+                    "warnings": warnings,
+                }
+
+            has_bgc = len(bgc_keys) > 0
+            available_parameters = ["PRES", "TEMP", "PSAL"] + bgc_keys
+            core_qc_available = bool(p_qc or t_qc or s_qc or row["profile_temp_qc"] or row["profile_psal_qc"])
+            bgc_qc_available = bool(isinstance(bgc_qc_dict, dict) and any(bgc_qc_dict.values()))
+
             return {
                 "profile_id": row["profile_id"],
                 "float_id": row["float_id"],
@@ -1302,18 +1424,393 @@ vary with depth at the recorded geographic location and time.
                 "project_name": row["project_name"],
                 "platform_type": row["platform_type"],
                 "cycle_number": row["cycle_number"],
+                "direction": row["direction"],
+                "data_mode": row["data_mode"],
+                "has_bgc": has_bgc,
+                "profile_type": "BGC" if has_bgc else "Core",
+                "available_parameters": available_parameters,
+                "bgc_parameters": bgc_keys,
                 "profile_time": row["profile_time"].isoformat() if row["profile_time"] else None,
                 "latitude": float(row["latitude"]) if row["latitude"] is not None else None,
                 "longitude": float(row["longitude"]) if row["longitude"] is not None else None,
                 "level_count": len(p_arr),
-                "data_annotation": "Raw, unadjusted, no QC flags",
-                "qc_available": False,
+                "bgc_level_count": len(bgc_pres) if isinstance(bgc_pres, list) else 0,
+                "data_annotation": (
+                    f"Data mode: {row['data_mode'] or 'R'}; "
+                    "BGC pressure is independent from core pressure"
+                    if has_bgc
+                    else f"Data mode: {row['data_mode'] or 'R'}; Core profile"
+                ),
+                "qc_available": core_qc_available or bgc_qc_available,
+                "core_qc": {
+                    "profile_pres_qc": row["profile_pres_qc"],
+                    "profile_temp_qc": row["profile_temp_qc"],
+                    "profile_psal_qc": row["profile_psal_qc"],
+                    "pressure_qc": p_qc,
+                    "temperature_qc": t_qc,
+                    "salinity_qc": s_qc,
+                },
                 "measurements": {
                     "pressure": p_arr,
                     "temperature": t_arr,
                     "salinity": s_arr
-                }
+                },
+                "bgc_measurements": {
+                    "bgc_pressure": bgc_pres,
+                    "parameters": bgc_parameters_detail,
+                    "source_metadata": bgc_src_meta,
+                } if has_bgc else None,
             }
+
+    # ---------------------------------------------------------
+    # SCIENTIFIC INSIGHTS HELPERS (Phase 4B)
+    # ---------------------------------------------------------
+
+    def get_insights_summary(self):
+        """
+        Returns dataset composition, float distribution, and validated BGC parameter
+        statistics computed via bgc_calculations.py.
+        """
+        from bgc_calculations import (
+            BGC_PARAMETER_DESCRIPTIONS,
+            BGC_PARAMETER_UNITS,
+            calculate_bgc_statistics,
+        )
+
+        overview = self.get_data_overview()
+
+        with self.mysql_engine.connect() as conn:
+            float_rows = conn.execute(text("""
+                SELECT
+                    f.wmo_number,
+                    COUNT(p.profile_id) AS profile_count,
+                    SUM(CASE WHEN p.bgc_params IS NOT NULL AND JSON_LENGTH(p.bgc_params) > 0 THEN 1 ELSE 0 END) AS bgc_profile_count,
+                    SUM(CASE WHEN p.bgc_params IS NULL OR JSON_LENGTH(p.bgc_params) = 0 THEN 1 ELSE 0 END) AS core_profile_count
+                FROM argo_floats f
+                LEFT JOIN argo_profiles p ON f.float_id = p.float_id
+                GROUP BY f.float_id, f.wmo_number
+                ORDER BY profile_count DESC, f.wmo_number ASC
+            """)).mappings().fetchall()
+
+            float_distribution = [
+                {
+                    "wmo_number": int(r["wmo_number"]),
+                    "profile_count": int(r["profile_count"] or 0),
+                    "bgc_profile_count": int(r["bgc_profile_count"] or 0),
+                    "core_profile_count": int(r["core_profile_count"] or 0),
+                }
+                for r in float_rows
+            ]
+
+            bgc_rows = conn.execute(text("""
+                SELECT
+                    p.profile_id,
+                    f.wmo_number,
+                    p.cycle_number,
+                    p.direction,
+                    p.data_mode,
+                    p.bgc_pressure,
+                    p.bgc_params,
+                    p.bgc_qc,
+                    p.bgc_adjusted,
+                    p.bgc_adjusted_qc,
+                    p.bgc_source_metadata
+                FROM argo_profiles p
+                JOIN argo_floats f ON p.float_id = f.float_id
+                WHERE p.bgc_params IS NOT NULL AND JSON_LENGTH(p.bgc_params) > 0
+            """)).mappings().fetchall()
+
+        bgc_row_dicts = [dict(r) for r in bgc_rows]
+        target_params = [
+            "DOXY",
+            "CHLA",
+            "BBP700",
+            "NITRATE",
+            "PH_IN_SITU_TOTAL",
+            "CHLA_FLUORESCENCE",
+        ]
+
+        parameter_stats = []
+        for param_key in target_params:
+            matching_rows = []
+            wmo_set = set()
+            for r in bgc_row_dicts:
+                raw_p = r.get("bgc_params")
+                parsed_p = json.loads(raw_p) if isinstance(raw_p, str) else raw_p
+                if isinstance(parsed_p, dict) and param_key in parsed_p:
+                    matching_rows.append(r)
+                    if r.get("wmo_number") is not None:
+                        wmo_set.add(r["wmo_number"])
+
+            if not matching_rows:
+                parameter_stats.append({
+                    "parameter": param_key,
+                    "description": BGC_PARAMETER_DESCRIPTIONS.get(param_key, param_key),
+                    "unit": BGC_PARAMETER_UNITS.get(param_key, "unknown"),
+                    "profile_count": 0,
+                    "float_count": 0,
+                    "valid_count": 0,
+                    "missing_count": 0,
+                    "minimum": None,
+                    "maximum": None,
+                    "mean": None,
+                    "median": None,
+                    "std_dev": None,
+                    "qc_policy": "all_finite_with_qc_reported",
+                    "aggregation_scope": "dataset_wide_unbinned",
+                    "warnings": [f"No profiles contain {param_key}."],
+                })
+                continue
+
+            calc = calculate_bgc_statistics(
+                matching_rows,
+                param_key,
+                scope="result_set",
+                aggregation_type="SUMMARY",
+            )
+            stat_dict = calc.to_dict()
+            stat_dict["description"] = BGC_PARAMETER_DESCRIPTIONS.get(param_key, param_key)
+            stat_dict["profile_count"] = len(matching_rows)
+            stat_dict["float_count"] = len(wmo_set)
+            stat_dict["aggregation_scope"] = "dataset_wide_unbinned"
+            parameter_stats.append(stat_dict)
+
+        return {
+            "composition": {
+                "total_floats": overview["total_floats"],
+                "total_profiles": overview["total_profiles"],
+                "bgc_profiles": overview["bgc_profiles"],
+                "core_only_profiles": overview["core_only_profiles"],
+                "direction_counts": overview["direction_counts"],
+            },
+            "float_distribution": float_distribution,
+            "bgc_parameter_statistics": parameter_stats,
+            "aggregation_note": (
+                "Dataset-wide statistics aggregate all valid observations across matching "
+                "profiles without depth binning; global means are not representative of "
+                "individual profiles or specific depth layers."
+            ),
+        }
+
+    def get_insights_depth_profile(self, parameter, bin_size_dbar=50, wmo_number=None):
+        """
+        Computes explicitly documented fixed-width pressure-binned statistics for a
+        BGC parameter using bgc_pressure exclusively.
+        """
+        import statistics
+        from bgc_calculations import (
+            BGC_PARAMETER_UNITS,
+            QC_POLICY_ALL_FINITE,
+            extract_valid_bgc_series,
+        )
+
+        where_parts = [
+            "p.bgc_params IS NOT NULL",
+            "JSON_CONTAINS_PATH(p.bgc_params, 'one', :param_json_path)",
+        ]
+        params = {"param_json_path": f"$.{parameter}", "scan_limit": 500}
+        if wmo_number is not None:
+            where_parts.append("f.wmo_number = :wmo")
+            params["wmo"] = wmo_number
+
+        sql = f"""
+            SELECT
+                p.profile_id,
+                f.wmo_number,
+                p.bgc_pressure,
+                p.bgc_params,
+                p.bgc_qc,
+                p.bgc_source_metadata
+            FROM argo_profiles p
+            JOIN argo_floats f ON p.float_id = f.float_id
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY p.profile_id ASC
+            LIMIT :scan_limit
+        """
+
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().fetchall()
+
+        bins = {}
+        bin_profiles = {}
+        profiles_with_valid_pressure = 0
+        warnings = []
+
+        for r in rows:
+            row_dict = dict(r)
+            vals, pressures, _, row_warnings = extract_valid_bgc_series(row_dict, parameter)
+            for w in row_warnings:
+                if w not in warnings:
+                    warnings.append(w)
+
+            any_paired = False
+            for val, pres in zip(vals, pressures):
+                if pres is None or pres < 0:
+                    continue
+                any_paired = True
+                bin_idx = int(pres // bin_size_dbar)
+                bins.setdefault(bin_idx, []).append(val)
+                bin_profiles.setdefault(bin_idx, set()).add(row_dict["profile_id"])
+            if any_paired:
+                profiles_with_valid_pressure += 1
+
+        binned_levels = []
+        for bin_idx in sorted(bins.keys()):
+            b_vals = bins[bin_idx]
+            b_start = bin_idx * bin_size_dbar
+            b_end = b_start + bin_size_dbar
+            binned_levels.append({
+                "bin_start_dbar": b_start,
+                "bin_end_dbar": b_end,
+                "bin_mid_dbar": b_start + (bin_size_dbar / 2.0),
+                "observation_count": len(b_vals),
+                "profile_count": len(bin_profiles[bin_idx]),
+                "mean": round(statistics.fmean(b_vals), 4),
+                "minimum": round(min(b_vals), 4),
+                "maximum": round(max(b_vals), 4),
+            })
+
+        return {
+            "parameter": parameter,
+            "unit": BGC_PARAMETER_UNITS.get(parameter, "unknown"),
+            "wmo_number": wmo_number,
+            "bin_size_dbar": bin_size_dbar,
+            "binning_method": "fixed_width_pressure_binning",
+            "pressure_axis": "bgc_pressure",
+            "qc_policy": QC_POLICY_ALL_FINITE,
+            "profiles_scanned": len(rows),
+            "profiles_with_valid_data": profiles_with_valid_pressure,
+            "bins": binned_levels,
+            "warnings": warnings,
+        }
+
+    def get_insights_compare(self, profile_ids, parameter):
+        """
+        Retrieves separate, unmerged profile series for side-by-side comparison.
+        Uses bgc_pressure for BGC parameters and core pressure for TEMP/PSAL.
+        """
+        from bgc_calculations import (
+            BGC_PARAMETER_UNITS,
+            calculate_bgc_statistics,
+            extract_valid_bgc_series,
+        )
+
+        is_core = parameter in ("TEMP", "PSAL")
+        unit = {"TEMP": "°C", "PSAL": "PSU"}.get(
+            parameter, BGC_PARAMETER_UNITS.get(parameter, "unknown")
+        )
+        pressure_axis = "pressure" if is_core else "bgc_pressure"
+
+        placeholders = ", ".join(f":pid_{i}" for i in range(len(profile_ids)))
+        bind_params = {f"pid_{i}": pid for i, pid in enumerate(profile_ids)}
+
+        sql = f"""
+            SELECT
+                p.profile_id,
+                f.wmo_number,
+                p.cycle_number,
+                p.direction,
+                p.data_mode,
+                p.profile_time,
+                p.pressure,
+                p.temperature,
+                p.salinity,
+                p.bgc_pressure,
+                p.bgc_params,
+                p.bgc_qc,
+                p.bgc_source_metadata
+            FROM argo_profiles p
+            JOIN argo_floats f ON p.float_id = f.float_id
+            WHERE p.profile_id IN ({placeholders})
+            ORDER BY p.profile_id ASC
+        """
+
+        with self.mysql_engine.connect() as conn:
+            rows = conn.execute(text(sql), bind_params).mappings().fetchall()
+
+        rows_by_id = {r["profile_id"]: dict(r) for r in rows}
+        series_list = []
+
+        for pid in profile_ids:
+            row = rows_by_id.get(pid)
+            if not row:
+                series_list.append({
+                    "profile_id": pid,
+                    "available": False,
+                    "reason": f"Profile {pid} not found.",
+                })
+                continue
+
+            if is_core:
+                p_arr = json.loads(row["pressure"]) if isinstance(row["pressure"], str) else (row["pressure"] or [])
+                col = "temperature" if parameter == "TEMP" else "salinity"
+                v_arr = json.loads(row[col]) if isinstance(row[col], str) else (row[col] or [])
+                paired_v, paired_p = [], []
+                missing_cnt = 0
+                for v, p in zip(v_arr, p_arr):
+                    if v is None or p is None:
+                        missing_cnt += 1
+                        continue
+                    paired_v.append(float(v))
+                    paired_p.append(float(p))
+                series_list.append({
+                    "profile_id": pid,
+                    "wmo_number": row["wmo_number"],
+                    "cycle_number": row["cycle_number"],
+                    "direction": row["direction"],
+                    "profile_time": row["profile_time"].isoformat() if row["profile_time"] else None,
+                    "available": len(paired_v) > 0,
+                    "reason": None if paired_v else f"No valid {parameter} values in profile {pid}.",
+                    "unit": unit,
+                    "pressure_axis": pressure_axis,
+                    "values": paired_v,
+                    "pressures": paired_p,
+                    "valid_count": len(paired_v),
+                    "missing_count": missing_cnt,
+                    "warnings": [],
+                })
+            else:
+                vals, pressures, counts, warnings = extract_valid_bgc_series(row, parameter)
+                calc = calculate_bgc_statistics([row], parameter)
+                paired_v, paired_p = [], []
+                for v, p in zip(vals, pressures):
+                    if p is not None:
+                        paired_v.append(v)
+                        paired_p.append(p)
+                available = len(paired_v) > 0
+                reason = None
+                if not available:
+                    reason = (
+                        f"{parameter} is not available with valid bgc_pressure in profile {pid}."
+                    )
+                series_list.append({
+                    "profile_id": pid,
+                    "wmo_number": row["wmo_number"],
+                    "cycle_number": row["cycle_number"],
+                    "direction": row["direction"],
+                    "profile_time": row["profile_time"].isoformat() if row["profile_time"] else None,
+                    "available": available,
+                    "reason": reason,
+                    "unit": unit,
+                    "pressure_axis": pressure_axis,
+                    "values": paired_v,
+                    "pressures": paired_p,
+                    "valid_count": counts["valid"],
+                    "missing_count": counts["missing"],
+                    "stats": calc.to_dict() if counts["valid"] > 0 else None,
+                    "warnings": warnings,
+                })
+
+        return {
+            "parameter": parameter,
+            "unit": unit,
+            "pressure_axis": pressure_axis,
+            "grid_note": (
+                "Each profile is plotted on its own native pressure grid; "
+                "no cross-profile interpolation or grid merging is performed."
+            ),
+            "profiles": series_list,
+        }
 
     def get_map_points(self, wmo_number=None, cycle_number=None, start_date=None,
                        end_date=None, min_lat=None, max_lat=None, min_lon=None,

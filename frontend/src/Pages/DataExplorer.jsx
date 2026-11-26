@@ -13,6 +13,9 @@ const INITIAL_FILTERS = {
   wmo_number: "",
   profile_id: "",
   cycle_number: "",
+  profile_type: "",
+  parameter: "",
+  direction: "",
   start_date: "",
   end_date: "",
   min_lat: "",
@@ -131,6 +134,9 @@ const DataExplorer = () => {
         if (currentFilters.wmo_number) params.wmo_number = currentFilters.wmo_number;
         if (currentFilters.profile_id) params.profile_id = currentFilters.profile_id;
         if (currentFilters.cycle_number) params.cycle_number = currentFilters.cycle_number;
+        if (currentFilters.profile_type) params.profile_type = currentFilters.profile_type;
+        if (currentFilters.parameter) params.parameter = currentFilters.parameter;
+        if (currentFilters.direction) params.direction = currentFilters.direction;
         if (currentFilters.start_date) params.start_date = currentFilters.start_date;
         if (currentFilters.end_date) params.end_date = currentFilters.end_date;
         if (currentFilters.min_lat) params.min_lat = currentFilters.min_lat;

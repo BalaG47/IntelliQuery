@@ -4,6 +4,7 @@ import Navbar from "./components/Navbar";
 import Home from "./Pages/Home";
 import Landing from "./Pages/Landing";
 import DataExplorer from "./Pages/DataExplorer";
+import Insights from "./Pages/Insights";
 
 const App = () => {
   return (
@@ -14,6 +15,7 @@ const App = () => {
         <Route path="/Home" element={<Landing />} />
         <Route path="/chat" element={<Home />} />
         <Route path="/data" element={<DataExplorer />} />
+        <Route path="/insights" element={<Insights />} />
       </Routes>
     </>
   );

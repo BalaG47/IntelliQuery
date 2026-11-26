@@ -75,7 +75,10 @@ const SummaryCards = ({ overview, loading }) => {
       title: "Total Profiles",
       value: overview.total_profiles ? overview.total_profiles.toLocaleString() : "--",
       icon: <FiDatabase className="text-accent text-lg" />,
-      subtext: "Depth cycles recorded",
+      subtext:
+        overview.bgc_profiles !== undefined
+          ? `${overview.bgc_profiles.toLocaleString()} BGC · ${(overview.core_only_profiles ?? 0).toLocaleString()} Core`
+          : "Depth cycles recorded",
     },
     {
       title: "Date Range",
@@ -98,44 +101,66 @@ const SummaryCards = ({ overview, loading }) => {
     },
   ];
 
+  const bgcParams = overview.available_bgc_parameters || [];
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-      {cards.map((card, idx) => (
-        <div
-          key={idx}
-          className="bg-surface-0 border border-subtle rounded-[3px] p-4 flex items-center justify-between"
-        >
-          <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-wider text-muted font-mono font-medium mb-1">
-              {card.title}
-            </p>
-            {card.lines ? (
-              <div className="font-heading font-bold tracking-tight tabular-nums leading-tight">
-                {card.lines.map((line, lineIdx) => (
-                  <p
-                    key={lineIdx}
-                    className={
-                      lineIdx === 0
-                        ? "text-base text-primary whitespace-nowrap"
-                        : "text-sm text-secondary font-mono whitespace-nowrap"
-                    }
-                  >
-                    {line}
-                  </p>
-                ))}
-              </div>
-            ) : (
-              <p className="text-2xl font-bold text-primary font-heading tracking-tight">
-                {card.value}
+    <div className="mb-6 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {cards.map((card, idx) => (
+          <div
+            key={idx}
+            className="bg-surface-0 border border-subtle rounded-[3px] p-4 flex items-center justify-between"
+          >
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wider text-muted font-mono font-medium mb-1">
+                {card.title}
               </p>
-            )}
-            <p className="text-xs text-secondary mt-1">{card.subtext}</p>
+              {card.lines ? (
+                <div className="font-heading font-bold tracking-tight tabular-nums leading-tight">
+                  {card.lines.map((line, lineIdx) => (
+                    <p
+                      key={lineIdx}
+                      className={
+                        lineIdx === 0
+                          ? "text-base text-primary whitespace-nowrap"
+                          : "text-sm text-secondary font-mono whitespace-nowrap"
+                      }
+                    >
+                      {line}
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-2xl font-bold text-primary font-heading tracking-tight">
+                  {card.value}
+                </p>
+              )}
+              <p className="text-xs text-secondary mt-1">{card.subtext}</p>
+            </div>
+            <div className="w-10 h-10 rounded-[3px] bg-surface-1 border border-subtle flex items-center justify-center shrink-0">
+              {card.icon}
+            </div>
           </div>
-          <div className="w-10 h-10 rounded-[3px] bg-surface-1 border border-subtle flex items-center justify-center shrink-0">
-            {card.icon}
-          </div>
+        ))}
+      </div>
+
+      {bgcParams.length > 0 && (
+        <div className="bg-surface-0 border border-subtle rounded-[3px] px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs font-mono">
+          <span className="text-muted uppercase tracking-wider text-[11px] mr-1">
+            Available BGC Parameters:
+          </span>
+          {bgcParams.map((item) => (
+            <span
+              key={item.parameter}
+              className="px-2 py-0.5 rounded-[2px] bg-surface-1 border border-subtle text-primary tabular-nums"
+              title={`Unit: ${item.unit}`}
+            >
+              <span className="text-accent font-semibold">{item.parameter}</span>{" "}
+              <span className="text-muted">({item.profile_count} profiles · {item.unit})</span>
+            </span>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   );
 };

@@ -197,7 +197,10 @@ class SemanticPreservationTests(unittest.TestCase):
                 # matters is that the semantic branch ran and no SQL did.
                 self.assertTrue(answer)
                 self.assertEqual(data, context)
-                rag._retrieve_semantic.assert_called_once_with(question)
+                rag._retrieve_semantic.assert_called_once()
+                self.assertEqual(
+                    rag._retrieve_semantic.call_args[0][0], question
+                )
                 self.assertEqual(engine.calls, [])
 
     def test_oxygen_distribution_is_not_a_presence_filter(self):

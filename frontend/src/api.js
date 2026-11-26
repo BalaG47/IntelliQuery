@@ -75,4 +75,28 @@ export const getMapPoints = async (params = {}, signal) => {
   return res.data;
 };
 
+/**
+ * Fetch Scientific Insights summary (composition, float distribution, BGC stats).
+ */
+export const getInsightsSummary = async (signal) => {
+  const res = await apiClient.get("/api/data/insights/summary", { signal });
+  return res.data;
+};
+
+/**
+ * Fetch depth-binned BGC parameter profile using bgc_pressure.
+ */
+export const getInsightsDepthProfile = async (params = {}, signal) => {
+  const res = await apiClient.get("/api/data/insights/depth-profile", { params, signal });
+  return res.data;
+};
+
+/**
+ * Compare 2 to 5 profiles for a selected parameter without merging grids.
+ */
+export const getInsightsCompare = async (params = {}, signal) => {
+  const res = await apiClient.get("/api/data/insights/compare", { params, signal });
+  return res.data;
+};
+
 export default apiClient;
