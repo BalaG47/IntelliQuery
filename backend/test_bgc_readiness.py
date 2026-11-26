@@ -13,6 +13,9 @@ Coverage:
   * missing/partial metadata, raw vs adjusted separation, differing lengths
   * unchanged Core-Argo extraction behaviour
   * one integration test with a fake database manager (no MySQL, no ChromaDB)
+  * profile identity (float, cycle, N_PROF index) and idempotent re-ingestion
+  * core auxiliary variables (MTIME / *_STD / *_MED) excluded from BGC
+  * NaN latitude/longitude stored as NULL instead of failing the insert
 """
 
 import json
@@ -28,8 +31,10 @@ from data_processor import (
     extract_bgc_data,
     extract_data_mode,
     extract_measurement_array,
+    extract_profile_position,
     extract_profile_qc,
     extract_qc_array,
+    is_core_auxiliary_parameter,
 )
 
 REAL_CORE_FILE = os.path.join(
@@ -456,15 +461,27 @@ class FakeDatabaseManager:
         self.floats.append((wmo_number, project_name, platform_type))
         return 1
 
-    def check_profile_exists(self, float_id, cycle_number):
+    def check_profile_exists(self, float_id, cycle_number, direction=None,
+                             profile_time=None):
         return False
 
     def insert_profile(self, profile_data):
         self.inserted.append(profile_data)
         return len(self.inserted)
 
+    def get_profile_id(self, float_id, cycle_number, direction=None,
+                       profile_time=None):
+        return None
+
+    def sync_profile_vector(self, profile_id):
+        raise AssertionError("no stored profile can need reconciliation")
+
     def add_profile_to_chromadb(self, *args, **kwargs):
         self.chroma_writes.append((args, kwargs))
+
+    def add_profile_from_row(self, profile_id):
+        # The real manager reads the row back; the fake only records the write.
+        self.add_profile_to_chromadb(profile_id)
 
 
 class IngestionPayloadTests(unittest.TestCase):
@@ -577,6 +594,252 @@ class IngestionPayloadTests(unittest.TestCase):
         self.assertEqual(payload["source_file"], "D1900121_044.nc")
         self.assertEqual(payload["source_file_sha256"],
                          compute_file_sha256(REAL_CORE_FILE))
+
+
+# ---------------------------------------------------------------------------
+# 13-16: Core auxiliary variables are not BGC parameters
+# ---------------------------------------------------------------------------
+
+
+def parameter_dataset(names, modes=None, values=None):
+    """One-profile dataset with the given STATION_PARAMETERS names and arrays."""
+    data = {
+        "STATION_PARAMETERS": (
+            ("N_PROF", "N_PARAM"), np.array([names], dtype=object)),
+    }
+    if modes is not None:
+        data["PARAMETER_DATA_MODE"] = (
+            ("N_PROF", "N_PARAM"), np.array([modes], dtype="S1"))
+    for name in names:
+        data[name] = (
+            ("N_PROF", "N_LEVELS"),
+            np.array([(values or {}).get(name, [1.0, 2.0])], dtype="f4"),
+        )
+    return xr.Dataset(data)
+
+
+class CoreAuxiliaryExclusionTests(unittest.TestCase):
+    """MTIME and the *_STD/*_MED families describe the core product."""
+
+    AUXILIARY = ["MTIME", "TEMP_STD", "PSAL_STD",
+                 "PRES_MED", "TEMP_MED", "PSAL_MED"]
+
+    def test_core_auxiliary_variables_are_not_extracted_as_bgc(self):
+        names = ["PRES", "TEMP", "PSAL"] + self.AUXILIARY
+        dataset = parameter_dataset(names, modes=["D"] * len(names))
+
+        bgc_params, bgc_qc, bgc_adj, bgc_err, bgc_adj_qc, modes = \
+            extract_bgc_data(dataset)
+
+        self.assertIsNone(bgc_params)
+        self.assertIsNone(bgc_qc)
+        self.assertIsNone(bgc_adj)
+        self.assertIsNone(bgc_err)
+        self.assertIsNone(bgc_adj_qc)
+        # Metadata extraction is unchanged: the modes still resolve.
+        self.assertEqual(modes["MTIME"], "D")
+
+    def test_chla_fluorescence_is_still_discovered(self):
+        names = ["PRES", "CHLA", "CHLA_FLUORESCENCE"]
+        dataset = parameter_dataset(
+            names,
+            modes=["D", "A", "A"],
+            values={"CHLA": [0.5, 0.4],
+                    "CHLA_FLUORESCENCE": [0.02, 0.03]},
+        )
+
+        bgc_params = extract_bgc_data(dataset)[0]
+
+        self.assertEqual(sorted(bgc_params), ["CHLA", "CHLA_FLUORESCENCE"])
+        self.assertEqual(bgc_params["CHLA_FLUORESCENCE"], [0.02, 0.03])
+
+    def test_genuine_bgc_parameters_survive_alongside_auxiliary_variables(self):
+        names = ["PRES", "TEMP", "PSAL", "DOXY", "BBP700", "TEMP_STD"]
+        dataset = parameter_dataset(
+            names, modes=["D"] * len(names),
+            values={"DOXY": [210.0, 205.0], "BBP700": [0.001, 0.002]},
+        )
+
+        bgc_params = extract_bgc_data(dataset)[0]
+
+        self.assertEqual(sorted(bgc_params), ["BBP700", "DOXY"])
+
+    def test_only_core_auxiliary_families_are_classified_as_auxiliary(self):
+        for name in self.AUXILIARY + ["PRES_dPRES"]:
+            with self.subTest(name=name):
+                self.assertTrue(is_core_auxiliary_parameter(name))
+        for name in ("DOXY", "CHLA", "CHLA_FLUORESCENCE", "BBP700",
+                     "NITRATE", "PH_IN_SITU_TOTAL", "TURBIDITY"):
+            with self.subTest(name=name):
+                self.assertFalse(is_core_auxiliary_parameter(name))
+
+
+# ---------------------------------------------------------------------------
+# 17-19: Profile identity and missing position fixes
+# ---------------------------------------------------------------------------
+
+
+class IdentityKeyDatabaseManager(FakeDatabaseManager):
+    """Enforces UNIQUE (float_id, cycle_number, direction, profile_time)."""
+
+    def __init__(self):
+        super().__init__()
+        self.stored = {}
+
+    @staticmethod
+    def key(profile_data):
+        return (profile_data["float_id"], profile_data["cycle_number"],
+                profile_data["direction"], profile_data["profile_time"])
+
+    def check_profile_exists(self, float_id, cycle_number, direction=None,
+                             profile_time=None):
+        return (float_id, cycle_number, direction, profile_time) in self.stored
+
+    def get_profile_id(self, float_id, cycle_number, direction=None,
+                       profile_time=None):
+        key = (float_id, cycle_number, direction, profile_time)
+        if key not in self.stored:
+            return None
+        return self.inserted.index(self.stored[key]) + 1
+
+    def sync_profile_vector(self, profile_id):
+        return "unchanged"
+
+    def insert_profile(self, profile_data):
+        self.stored[self.key(profile_data)] = profile_data
+        self.inserted.append(profile_data)
+        return len(self.stored)
+
+
+def sub_profile_dataset(n_prof=3, cycle=301):
+    """Several N_PROF entries that all share one cycle, with distinct DOXY."""
+    rows = []
+    for index in range(n_prof):
+        rows.append({
+            "cycle": cycle,
+            "mode": "D",
+            "values": {
+                "PRES": [1.0, 2.0, 3.0],
+                "TEMP": [28.0 - index, 27.0 - index, 26.0 - index],
+                "PSAL": [35.0, 35.1, 35.2],
+                "DOXY": [210.0 - index, 205.0 - index, 200.0 - index],
+            },
+            "qc": {name: [b"1", b"1", b"1"]
+                   for name in ("PRES", "TEMP", "PSAL", "DOXY")},
+            "pdm": {"PRES": "D", "TEMP": "D", "PSAL": "D", "DOXY": "D"},
+        })
+    return build_synthetic(rows, ["PRES", "TEMP", "PSAL", "DOXY"])
+
+
+class ProfileIdentityTests(unittest.TestCase):
+    def ingest(self, manager, dataset, filename="synthetic_sub_profiles.nc"):
+        processor = ArgoDataProcessor(manager)
+        return [
+            processor._process_single_profile(
+                dataset.isel(N_PROF=index),
+                1,
+                "1900001",
+                nc_file_path=filename,
+                file_sha256="d" * 64,
+                profile_index=index,
+                full_dataset=dataset,
+            )
+            for index in range(dataset.sizes["N_PROF"])
+        ]
+
+    def test_sub_profiles_sharing_a_cycle_are_all_retained(self):
+        """Profiles of one cycle with distinct times stay distinct rows."""
+        dataset = sub_profile_dataset()
+        manager = IdentityKeyDatabaseManager()
+
+        statuses = self.ingest(manager, dataset)
+
+        self.assertEqual(statuses, ["inserted", "inserted", "inserted"])
+        self.assertEqual(len(manager.stored), 3)
+        self.assertEqual({key[1] for key in manager.stored}, {301})
+        # Identity no longer depends on the N_PROF index; the observation time
+        # is what separates these profiles.
+        self.assertEqual(len({key[3] for key in manager.stored}), 3)
+        self.assertEqual({key[2] for key in manager.stored}, {"-"})
+
+    def test_each_stored_profile_keeps_its_own_data(self):
+        dataset = sub_profile_dataset()
+        manager = IdentityKeyDatabaseManager()
+
+        self.ingest(manager, dataset)
+
+        by_index = {payload["profile_index_in_file"]: payload
+                    for payload in manager.inserted}
+        self.assertEqual(json.loads(by_index[2]["bgc_params"])["DOXY"],
+                         [208.0, 203.0, 198.0])
+        self.assertEqual(json.loads(by_index[0]["bgc_params"])["DOXY"],
+                         [210.0, 205.0, 200.0])
+
+    def test_reingestion_is_idempotent(self):
+        dataset = sub_profile_dataset()
+        manager = IdentityKeyDatabaseManager()
+
+        self.ingest(manager, dataset)
+        inserted_after_first = len(manager.inserted)
+
+        second = self.ingest(manager, dataset)
+
+        self.assertEqual(second, ["skipped", "skipped", "skipped"])
+        self.assertEqual(len(manager.inserted), inserted_after_first)
+        self.assertEqual(len(manager.stored), 3)
+
+
+class MissingPositionTests(unittest.TestCase):
+    """A profile without a GPS fix keeps its measurements."""
+
+    def payload(self, **overrides):
+        dataset = build_synthetic(
+            [core_row(mode="D",
+                      pdm={"PRES": "D", "TEMP": "D", "PSAL": "D"},
+                      **overrides)],
+            ["PRES", "TEMP", "PSAL"])
+        fake_db = FakeDatabaseManager()
+        ArgoDataProcessor(fake_db)._process_single_profile(
+            dataset.isel(N_PROF=0),
+            1,
+            "1900001",
+            nc_file_path="synthetic_no_position.nc",
+            file_sha256="c" * 64,
+            profile_index=0,
+            full_dataset=dataset,
+        )
+        return fake_db.inserted[0]
+
+    def test_nan_position_becomes_null(self):
+        payload = self.payload(lat=float("nan"), lon=float("nan"))
+
+        self.assertIsNone(payload["latitude"])
+        self.assertIsNone(payload["longitude"])
+        # The profile itself is still stored in full.
+        self.assertEqual(json.loads(payload["temperature"]), [28.0, 27.5, 27.0])
+        self.assertEqual(json.loads(payload["pressure"]), [1.0, 2.0, 3.0])
+
+    def test_partial_position_keeps_the_known_component(self):
+        payload = self.payload(lat=float("nan"), lon=60.5)
+
+        self.assertIsNone(payload["latitude"])
+        self.assertEqual(payload["longitude"], 60.5)
+
+    def test_a_known_position_is_never_altered(self):
+        payload = self.payload(lat=-4.006523333333333, lon=76.29734)
+
+        self.assertEqual(payload["latitude"], -4.006523333333333)
+        self.assertEqual(payload["longitude"], 76.29734)
+
+    def test_extract_profile_position_reports_missing_components(self):
+        dataset = build_synthetic(
+            [core_row(mode="D",
+                      pdm={"PRES": "D", "TEMP": "D", "PSAL": "D"},
+                      lat=float("nan"), lon=float("nan"))],
+            ["PRES", "TEMP", "PSAL"])
+
+        self.assertEqual(extract_profile_position(dataset.isel(N_PROF=0)),
+                         (None, None))
 
 
 if __name__ == "__main__":

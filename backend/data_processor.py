@@ -10,6 +10,14 @@ import xarray as xr
 from tqdm import tqdm
 
 from config import ARGO_DATA_DIR
+from bgc_matching import (
+    UNKNOWN_DIRECTION,
+    classify_pressure_grid,
+    group_by_cycle,
+    index_file,
+    plan_group,
+    profile_time_from_juld,
+)
 from database_manager import DatabaseManager
 
 
@@ -342,6 +350,52 @@ def _parameter_data_modes(dataset, profile_idx=0):
     return result
 
 
+# Core-Argo auxiliary and derived variables. They appear in the same
+# STATION_PARAMETERS list as the core measurements, but they are derived from
+# PRES/TEMP/PSAL (running means, standard deviations) or are a time offset, not
+# biogeochemical measurements, so dynamic BGC discovery must skip them.
+CORE_AUXILIARY_PARAMETERS = frozenset({"MTIME"})
+CORE_AUXILIARY_SUFFIXES = ("_STD", "_MED", "_dPRES")
+
+
+def is_core_auxiliary_parameter(name):
+    """True for a core-Argo auxiliary/derived parameter, never for a BGC one."""
+    if not name:
+        return False
+    return (
+        name in CORE_AUXILIARY_PARAMETERS
+        or name.endswith(CORE_AUXILIARY_SUFFIXES)
+    )
+
+
+def extract_profile_position(profile_ds):
+    """
+    Returns ``(latitude, longitude)``, using None for a missing position fix.
+
+    Argo leaves LATITUDE/LONGITUDE at NaN (occasionally a fill value) when a
+    profile has no GPS fix. That means "unknown", so it must become SQL NULL:
+    ``float()`` alone passes NaN through to MySQL, which used to fail the NOT
+    NULL constraint and abort the whole file. A missing coordinate is never
+    replaced by 0 or by another profile's position.
+    """
+    return (
+        _position_component(profile_ds, "LATITUDE"),
+        _position_component(profile_ds, "LONGITUDE"),
+    )
+
+
+def _position_component(profile_ds, var_name):
+    if var_name not in profile_ds.variables:
+        return None
+    values = np.asarray(profile_ds[var_name].values, dtype="float64").reshape(-1)
+    if values.size == 0:
+        return None
+    value = float(values[0])
+    if np.isnan(value) or value in (99999.0, -99999.0):
+        return None
+    return value
+
+
 def extract_bgc_data(dataset, profile_idx=0, metadata_dataset=None,
                      metadata_profile_idx=None):
     """
@@ -368,6 +422,11 @@ def extract_bgc_data(dataset, profile_idx=0, metadata_dataset=None,
 
     for name in _station_parameter_names(dataset, profile_idx):
         if name in core_params or name in discovered:
+            continue
+        # MTIME / *_STD / *_MED / *_dPRES belong to the core product.
+        # Storing them as BGC would add ~19 KB of pseudo-BGC to every
+        # core profile and mislabel derived values as measurements.
+        if is_core_auxiliary_parameter(name):
             continue
         if name in dataset.variables:
             discovered.append(name)
@@ -433,100 +492,85 @@ def extract_source_metadata(dataset, filepath, profile_idx=0):
     }
 
 
+def extract_direction(dataset):
+    """
+    Extracts the profile DIRECTION ('A' ascending, 'D' descending) or None.
+
+    Direction is part of the logical profile identity, so a value outside the
+    Argo domain is reported as unknown (None) instead of being stored as though
+    it were a direction.
+    """
+    if "DIRECTION" not in dataset.variables:
+        return None
+
+    item = _profile_scalar_value(dataset["DIRECTION"].values, 0)
+    s = clean_metadata_str(item)
+
+    if s and s[0].upper() in {"A", "D"}:
+        return s[0].upper()
+    return None
+
+
 class ArgoDataProcessor:
-    """Ingest ARGO NetCDF files into MySQL and ChromaDB together."""
+    """Ingest ARGO NetCDF products into MySQL and ChromaDB together.
+
+    Ingestion is grouped by ``(float, cycle)``: the core and BGC products of one
+    cycle are indexed first, matched on ``(JULD, DIRECTION)``, and written as one
+    row per logical profile (``docs/bgc/BGC_PRODUCT_MATCHING.md``). The BGC
+    measurements keep their own pressure axis; nothing is interpolated or
+    index-aligned across products.
+    """
+
+    # Copied from the BGC product onto the merged row when a core profile is
+    # present. The core's own pressure/temperature/salinity columns are never
+    # replaced by the BGC ones.
+    BGC_ATTACH_FIELDS = (
+        "bgc_params",
+        "bgc_qc",
+        "bgc_adjusted",
+        "bgc_adjusted_error",
+        "bgc_adjusted_qc",
+        "parameter_data_mode",
+    )
 
     def __init__(self, db_manager: DatabaseManager):
         self.db_manager = db_manager
+        # Logical identities written during one top-level run. A second row for
+        # the same identity would be a fabricated association, so it is reported
+        # instead of inserted.
+        self._identities_in_run = set()
 
-    def process_and_ingest(self, directory=ARGO_DATA_DIR):
-        """Ingest every NetCDF file in ``directory`` and return a summary."""
+    # ---------------------------------------------------------
+    # PROFILE PAYLOAD
+    # ---------------------------------------------------------
 
-        if not os.path.isdir(directory):
-            raise FileNotFoundError(f"ARGO data directory does not exist: {directory}")
-
-        nc_files = sorted(
-            os.path.join(directory, filename)
-            for filename in os.listdir(directory)
-            if filename.lower().endswith(".nc")
-        )
-        summary = {"files": len(nc_files), "inserted": 0, "skipped": 0, "errors": []}
-
-        for nc_file_path in tqdm(nc_files, desc="Processing ARGO files"):
-            result = self.process_file(nc_file_path)
-            summary["inserted"] += result["inserted"]
-            summary["skipped"] += result["skipped"]
-            if result["error"]:
-                summary["errors"].append(result)
-
-        return summary
-
-    def process_file(self, nc_file_path):
-        """Ingest one saved upload; safe to call again for an existing file."""
-
-        result = {
-            "filename": os.path.basename(nc_file_path),
-            "inserted": 0,
-            "skipped": 0,
-            "error": None,
-        }
-
-        try:
-            file_sha256 = compute_file_sha256(nc_file_path)
-            with xr.open_dataset(nc_file_path, decode_times=False) as dataset:
-                raw_wmo = dataset["PLATFORM_NUMBER"].values[0]
-                wmo_number = int(
-                    raw_wmo.decode().strip()
-                    if isinstance(raw_wmo, bytes)
-                    else str(raw_wmo).strip()
-                )
-                project_name = extract_netcdf_metadata_string(dataset, "PROJECT_NAME", default="N/A")
-                platform_type = extract_netcdf_metadata_string(dataset, "PLATFORM_TYPE", default="N/A")
-                float_id_db = self.db_manager.get_or_create_float(
-                    wmo_number,
-                    project_name,
-                    platform_type,
-                )
-
-                for index in range(dataset.sizes["N_PROF"]):
-                    status = self._process_single_profile(
-                        dataset.isel(N_PROF=index),
-                        float_id_db,
-                        str(wmo_number),
-                        nc_file_path=nc_file_path,
-                        file_sha256=file_sha256,
-                        profile_index=index,
-                        full_dataset=dataset,
-                    )
-                    result[status] += 1
-
-        except Exception as error:
-            logging.warning("Could not ingest %s: %s", result["filename"], error)
-            result["error"] = str(error)
-
-        return result
-
-    def _process_single_profile(
+    def _build_profile_payload(
         self,
         profile_ds,
         float_id_db,
-        float_id,
         nc_file_path=None,
         file_sha256=None,
         profile_index=0,
         full_dataset=None,
+        direction=None,
+        core_variants=None,
     ):
-        """Insert one profile in both stores, or report an existing profile."""
+        """
+        Builds the argo_profiles row for one profile, without writing it.
+
+        The same builder is used for a core record, a BGC record and a merged
+        row, so every column is produced by one code path.
+        """
 
         cycle_number = int(profile_ds["CYCLE_NUMBER"].values)
-        if self.db_manager.check_profile_exists(float_id_db, cycle_number):
-            return "skipped"
-
-        profile_time = pd.Timestamp("1950-01-01") + pd.to_timedelta(
-            profile_ds["JULD"].values, unit="D"
+        profile_time = profile_time_from_juld(
+            float(np.atleast_1d(profile_ds["JULD"].values)[0])
         )
-        latitude = float(profile_ds["LATITUDE"].values)
-        longitude = float(profile_ds["LONGITUDE"].values)
+        latitude, longitude = extract_profile_position(profile_ds)
+
+        if direction is None:
+            direction = extract_direction(profile_ds)
+        direction = direction or UNKNOWN_DIRECTION
 
         # 1. Core Measurements (Raw, QC, Adjusted, Error, Adjusted QC)
         pressure = extract_measurement_array(profile_ds, "PRES")
@@ -578,11 +622,43 @@ class ArgoDataProcessor:
             if nc_file_path
             else None
         )
+        if source_metadata is not None and core_variants is not None:
+            source_metadata["core_variants"] = core_variants
 
-        profile_data = {
+        # 6. BGC provenance and the BGC product's own pressure axis. The axis is
+        # stored whenever BGC measurements are, because a BGC array is only
+        # interpretable together with the pressure it was delivered with.
+        bgc_pressure = (
+            json.dumps(pressure) if bgc_params is not None and pressure is not None
+            else None
+        )
+        bgc_source_metadata = None
+        if bgc_params is not None:
+            bgc_source_metadata = {
+                "source_file": source_file,
+                "source_file_sha256": file_sha256,
+                "profile_index_in_file": profile_index,
+                "product_type": (
+                    source_metadata["product_type"] if source_metadata else None
+                ),
+                "data_mode": data_mode,
+                "direction": direction,
+                "juld": float(np.atleast_1d(profile_ds["JULD"].values)[0]),
+                "level_count": len(pressure) if pressure else 0,
+                "match": None,
+                "selection_rule": None,
+                "grid_check": None,
+                "grid_check_detail": None,
+                "candidates": [],
+                "position_used_for_profile": False,
+                "profile_position": {"latitude": latitude, "longitude": longitude},
+            }
+
+        return {
             "float_id": float_id_db,
             "cycle_number": cycle_number,
-            "profile_time": profile_time.to_pydatetime(),
+            "direction": direction,
+            "profile_time": profile_time,
             "latitude": latitude,
             "longitude": longitude,
             # Core Raw
@@ -618,6 +694,11 @@ class ArgoDataProcessor:
             "bgc_adjusted": json.dumps(bgc_adjusted) if bgc_adjusted is not None else None,
             "bgc_adjusted_error": json.dumps(bgc_adjusted_error) if bgc_adjusted_error is not None else None,
             "bgc_adjusted_qc": json.dumps(bgc_adjusted_qc) if bgc_adjusted_qc is not None else None,
+            "bgc_pressure": bgc_pressure,
+            "bgc_source_metadata": (
+                json.dumps(bgc_source_metadata)
+                if bgc_source_metadata is not None else None
+            ),
             # Provenance
             "source_file": source_file,
             "source_file_sha256": file_sha256,
@@ -625,18 +706,355 @@ class ArgoDataProcessor:
             "source_metadata": json.dumps(source_metadata) if source_metadata is not None else None,
         }
 
-        profile_id_db = self.db_manager.insert_profile(profile_data)
+    # ---------------------------------------------------------
+    # WRITE ONE LOGICAL PROFILE
+    # ---------------------------------------------------------
 
-        self.db_manager.add_profile_to_chromadb(
-            profile_id_db,
-            float_id,
-            cycle_number,
-            profile_time.to_pydatetime(),
-            latitude,
-            longitude,
-            bgc_params.keys() if bgc_params else [],
-            pressure,
-            temperature,
-            salinity,
+    def _reconcile_existing_vector(self, identity):
+        """
+        Rebuilds the vector of an already stored profile when it is missing.
+
+        MySQL commits a row before its ChromaDB vector is written, so a crash
+        in between leaves a row that a re-ingestion would otherwise skip
+        forever. The relational row is authoritative; an existing vector that
+        still matches it is left untouched.
+        """
+
+        profile_id = self.db_manager.get_profile_id(*identity)
+
+        if profile_id is None:
+            # The row vanished between the existence check and the lookup;
+            # nothing was stored, and the next run will handle it.
+            return
+
+        status = self.db_manager.sync_profile_vector(profile_id)
+
+        if status != "unchanged":
+            logging.warning(
+                "Profile %s was already stored; its ChromaDB vector was %s "
+                "from the relational row.", profile_id, status)
+
+    def _store_payload(self, payload, float_id, guard=True):
+        """Writes one logical profile, or reports that it is already stored.
+
+        ``guard`` is on for group ingestion, where two records resolving to the
+        same identity would mean the matcher produced a duplicate; the
+        single-profile entry point leaves it off because it is not a run.
+        """
+
+        identity = (
+            payload["float_id"],
+            payload["cycle_number"],
+            payload["direction"],
+            payload["profile_time"],
         )
+
+        if guard:
+            if identity in self._identities_in_run:
+                raise RuntimeError(
+                    "two profiles of this run resolve to the same logical "
+                    f"identity {identity}; refusing to store one as if it were "
+                    "the other"
+                )
+            self._identities_in_run.add(identity)
+
+        if self.db_manager.check_profile_exists(*identity):
+            self._reconcile_existing_vector(identity)
+            return "skipped"
+
+        profile_id_db = self.db_manager.insert_profile(payload)
+
+        # The vector is built from the committed row, not from the payload:
+        # that is the same source reconciliation reads, so a fresh write and a
+        # later repair of it produce identical vectors.
+        self.db_manager.add_profile_from_row(profile_id_db)
+
         return "inserted"
+
+    def _process_single_profile(
+        self,
+        profile_ds,
+        float_id_db,
+        float_id,
+        nc_file_path=None,
+        file_sha256=None,
+        profile_index=0,
+        full_dataset=None,
+    ):
+        """Builds and stores one profile on its own (no core/BGC matching)."""
+
+        payload = self._build_profile_payload(
+            profile_ds,
+            float_id_db,
+            nc_file_path=nc_file_path,
+            file_sha256=file_sha256,
+            profile_index=profile_index,
+            full_dataset=full_dataset,
+        )
+        return self._store_payload(payload, float_id, guard=False)
+
+    # ---------------------------------------------------------
+    # GROUP INGESTION
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _file_sha256(path, cache):
+        if path not in cache:
+            cache[path] = compute_file_sha256(path)
+        return cache[path]
+
+    def _write_plan(self, plan, datasets, hashes, float_id_db, float_id):
+        """Writes one planned logical profile (core, BGC or merged)."""
+
+        core_record = plan["core"]
+        bgc_record = plan["bgc"]
+        base = core_record or bgc_record
+        if base is None:
+            raise ValueError("plan has neither a core nor a BGC record")
+
+        dataset = datasets[base["path"]]
+        payload = self._build_profile_payload(
+            dataset.isel(N_PROF=base["index"]),
+            float_id_db,
+            nc_file_path=base["path"],
+            file_sha256=self._file_sha256(base["path"], hashes),
+            profile_index=base["index"],
+            full_dataset=dataset,
+            direction=plan["direction"],
+            core_variants=plan["core_variants"] or None,
+        )
+
+        core_pressure = (
+            json.loads(payload["pressure"]) if core_record and payload["pressure"]
+            else None
+        )
+        position_from_bgc = False
+
+        if bgc_record is not None:
+            bgc_dataset = datasets[bgc_record["path"]]
+            bgc_payload = self._build_profile_payload(
+                bgc_dataset.isel(N_PROF=bgc_record["index"]),
+                float_id_db,
+                nc_file_path=bgc_record["path"],
+                file_sha256=self._file_sha256(bgc_record["path"], hashes),
+                profile_index=bgc_record["index"],
+                full_dataset=bgc_dataset,
+                direction=plan["direction"],
+            )
+
+            for field in self.BGC_ATTACH_FIELDS:
+                payload[field] = bgc_payload[field]
+            payload["bgc_pressure"] = bgc_payload["bgc_pressure"]
+            payload["bgc_source_metadata"] = bgc_payload["bgc_source_metadata"]
+
+            # The core profile is authoritative for its position. Only when it
+            # has no fix at all is the matched BGC profile's position used — the
+            # same physical profile, never a derived or invented coordinate.
+            position_from_bgc = (
+                core_record is not None
+                and payload["latitude"] is None
+                and bgc_payload["latitude"] is not None
+            )
+            if position_from_bgc:
+                payload["latitude"] = bgc_payload["latitude"]
+                payload["longitude"] = bgc_payload["longitude"]
+
+        if payload["bgc_source_metadata"] is not None:
+            metadata = json.loads(payload["bgc_source_metadata"])
+            metadata["match"] = plan["match"]
+            metadata["selection_rule"] = plan["core_selection_rule"]
+            metadata["candidates"] = plan["bgc_candidates"]
+            metadata["position_used_for_profile"] = position_from_bgc
+            grid_status, grid_detail = classify_pressure_grid(
+                json.loads(payload["bgc_pressure"]) if payload["bgc_pressure"] else None,
+                core_pressure if core_record is not None else None,
+            )
+            metadata["grid_check"] = grid_status
+            metadata["grid_check_detail"] = grid_detail
+            payload["bgc_source_metadata"] = json.dumps(metadata)
+
+        return self._store_payload(payload, float_id)
+
+    def process_group(self, float_wmo, cycle_number, core_records, bgc_records):
+        """
+        Ingests one ``(float, cycle)`` group: every core variant and every BGC
+        record of that cycle becomes exactly one row per logical profile.
+        """
+
+        result = {
+            "wmo_number": float_wmo,
+            "cycle_number": cycle_number,
+            "inserted": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+
+        plans = plan_group(core_records, bgc_records)
+        if not plans:
+            return result
+
+        datasets = {}
+        hashes = {}
+        try:
+            for record in core_records + bgc_records:
+                path = record["path"]
+                if path in datasets:
+                    continue
+                try:
+                    datasets[path] = xr.open_dataset(path, decode_times=False)
+                except Exception as error:
+                    # The profiles of this file cannot be read; the rest of the
+                    # group still is, and the failure is reported.
+                    logging.warning(
+                        "Could not open %s: %s", os.path.basename(path), error)
+                    result["errors"].append({
+                        "file": os.path.basename(path),
+                        "error": str(error),
+                    })
+                    return result
+
+            first_dataset = next(iter(datasets.values()))
+            project_name = extract_netcdf_metadata_string(
+                first_dataset, "PROJECT_NAME", default="N/A")
+            platform_type = extract_netcdf_metadata_string(
+                first_dataset, "PLATFORM_TYPE", default="N/A")
+            float_id_db = self.db_manager.get_or_create_float(
+                int(float_wmo), project_name, platform_type)
+
+            for plan in plans:
+                try:
+                    status = self._write_plan(
+                        plan, datasets, hashes, float_id_db, str(float_wmo))
+                except Exception as error:
+                    logging.warning(
+                        "Could not ingest %s cycle %s (%s @ %s): %s",
+                        float_wmo, cycle_number, plan["direction"],
+                        plan["profile_time"], error,
+                    )
+                    result["errors"].append({
+                        "file": (
+                            (plan["core"] or plan["bgc"])["file"]
+                        ),
+                        "error": f"cycle {cycle_number} profile "
+                                 f"{plan['direction']} @ {plan['profile_time']}: "
+                                 f"{error}",
+                    })
+                    continue
+                result[status] += 1
+
+        finally:
+            for dataset in datasets.values():
+                try:
+                    dataset.close()
+                except Exception:
+                    pass
+
+        return result
+
+    # ---------------------------------------------------------
+    # DATASET INGESTION
+    # ---------------------------------------------------------
+
+    def process_paths(self, paths, progress=False):
+        """
+        Indexes the given files, groups them by ``(float, cycle)`` and ingests
+        one row per logical profile. Safe to call again on the same files.
+        """
+
+        paths = [os.fspath(path) for path in paths]
+        summary = {
+            "files": len(paths),
+            "groups": 0,
+            "inserted": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+        self._identities_in_run = set()
+
+        records = []
+        for path in paths:
+            try:
+                records.extend(index_file(path))
+            except Exception as error:
+                logging.warning(
+                    "Could not index %s: %s", os.path.basename(path), error)
+                summary["errors"].append({
+                    "file": os.path.basename(path),
+                    "error": str(error),
+                })
+
+        usable = []
+        for record in records:
+            if record["float"] is None or record["cycle"] is None:
+                summary["errors"].append({
+                    "file": record["file"],
+                    "error": f"N_PROF {record['index']} has no usable "
+                             "PLATFORM_NUMBER/CYCLE_NUMBER and was not stored",
+                })
+            else:
+                usable.append(record)
+
+        groups = group_by_cycle(usable)
+        summary["groups"] = len(groups)
+
+        keys = sorted(groups)
+        iterator = (
+            tqdm(keys, desc="Processing (float, cycle) groups") if progress else keys
+        )
+        for key in iterator:
+            group = groups[key]
+            try:
+                result = self.process_group(
+                    key[0], key[1], group["core"], group["bgc"])
+            except Exception as error:
+                # One unusable group must not abort the whole run, and must not
+                # be reported as success either.
+                logging.warning(
+                    "Could not ingest float %s cycle %s: %s", key[0], key[1], error)
+                summary["errors"].append({
+                    "file": str(key[0]),
+                    "error": f"cycle {key[1]}: {error}",
+                })
+                continue
+            summary["inserted"] += result["inserted"]
+            summary["skipped"] += result["skipped"]
+            summary["errors"].extend(result["errors"])
+
+        return summary
+
+    def process_dataset(self, directory, recursive=True, progress=False):
+        """Ingests every NetCDF file under ``directory`` as one corpus."""
+
+        if not os.path.isdir(directory):
+            raise FileNotFoundError(f"ARGO data directory does not exist: {directory}")
+
+        paths = []
+        for root, _directories, filenames in os.walk(directory):
+            for filename in filenames:
+                if filename.lower().endswith(".nc"):
+                    paths.append(os.path.join(root, filename))
+            if not recursive:
+                break
+
+        return self.process_paths(sorted(paths), progress=progress)
+
+    def process_and_ingest(self, directory=ARGO_DATA_DIR):
+        """Ingests the flat NetCDF directory configured by ``ARGO_DATA_DIR``."""
+
+        return self.process_dataset(directory, recursive=False, progress=True)
+
+    def process_file(self, nc_file_path):
+        """Ingests one saved upload; safe to call again for an existing file."""
+
+        summary = self.process_paths([nc_file_path])
+        errors = [
+            f"{entry['file']}: {entry['error']}" for entry in summary["errors"]
+        ]
+        return {
+            "filename": os.path.basename(nc_file_path),
+            "inserted": summary["inserted"],
+            "skipped": summary["skipped"],
+            "error": "; ".join(errors) if errors else None,
+            "errors": errors,
+            "groups": summary["groups"],
+        }

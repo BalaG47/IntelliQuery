@@ -264,58 +264,225 @@ class DatabaseManager:
     def check_profile_exists(
         self,
         float_id,
-        cycle_number
+        cycle_number,
+        direction,
+        profile_time
     ):
         """
-        Checks whether a profile already exists.
+        Checks whether this logical profile already exists.
+
+        Identity is (float_id, cycle_number, direction, profile_time). The core
+        and BGC products of one physical profile share it, and one cycle may
+        legitimately hold both an ascending and a descending profile.
+        profile_index_in_file is provenance, never identity.
+        """
+
+        return self.get_profile_id(
+            float_id, cycle_number, direction, profile_time
+        ) is not None
+
+    def get_profile_id(
+        self,
+        float_id,
+        cycle_number,
+        direction,
+        profile_time
+    ):
+        """
+        Returns the ``profile_id`` of a stored logical profile, or None.
+
+        The caller uses the id to verify that the profile's vector exists: a
+        row can be committed before its vector is written, so an existing row
+        is not proof of a complete record.
         """
 
         with self.mysql_engine.connect() as conn:
 
-            result = conn.execute(
+            row = conn.execute(
                 text("""
-                    SELECT 1
+                    SELECT profile_id
                     FROM argo_profiles
                     WHERE float_id = :fid
                     AND cycle_number = :cn
+                    AND direction = :dir
+                    AND profile_time = :pt
                 """),
                 {
                     "fid": float_id,
-                    "cn": cycle_number
+                    "cn": cycle_number,
+                    "dir": direction,
+                    "pt": profile_time
                 }
             ).fetchone()
 
-            return result is not None
+        return None if row is None else int(row[0])
 
     # ---------------------------------------------------------
     # INSERT PROFILE
     # ---------------------------------------------------------
 
+    # Columns the ingestion payload writes to. They are created by
+    # backend/migrations/V2__add_qc_adjusted_provenance_and_bgc_columns.sql; a
+    # database built only by create_mysql_tables() lacks them, and filtering the
+    # payload by the visible columns would drop QC, adjusted, calibration and
+    # BGC data with no error at all.
+    REQUIRED_PROFILE_COLUMNS = frozenset({
+        "float_id", "cycle_number", "direction", "profile_time",
+        "latitude", "longitude",
+        "pressure", "temperature", "salinity", "bgc_params",
+        "source_file", "source_file_sha256", "profile_index_in_file",
+        "source_metadata", "data_mode", "profile_pres_qc", "profile_temp_qc",
+        "profile_psal_qc", "pressure_qc", "pressure_adjusted",
+        "pressure_adjusted_error", "pressure_adjusted_qc", "temperature_qc",
+        "temperature_adjusted", "temperature_adjusted_error",
+        "temperature_adjusted_qc", "salinity_qc", "salinity_adjusted",
+        "salinity_adjusted_error", "salinity_adjusted_qc", "scientific_calib",
+        "parameter_data_mode", "bgc_qc", "bgc_adjusted", "bgc_adjusted_error",
+        "bgc_adjusted_qc", "bgc_pressure", "bgc_source_metadata",
+    })
+
+    # One logical Argo profile is identified by float, cycle, direction and
+    # observation time. The D/R records of one profile are processing variants
+    # and the SD/SR records are its BGC measurements, so neither the N_PROF
+    # index nor the product can be part of the identity.
+    PROFILE_IDENTITY_KEY = (
+        "float_id", "cycle_number", "direction", "profile_time"
+    )
+
+    #: Values of the ``product_type`` vector metadata key. They describe the
+    #: stored profile content (see _build_profile_metadata), not the source
+    #: product file name.
+    PRODUCT_TYPE_CORE = "core"
+    PRODUCT_TYPE_CORE_BGC = "core_bgc"
+
+    _UNCACHED = object()
+
     def _get_profile_table_columns(self):
-        if not hasattr(self, "_cached_profile_cols") or self._cached_profile_cols is None:
+        """
+        Returns the real argo_profiles column names (cached per manager).
+
+        A failed inspection is raised, never replaced by a guessed fallback: the
+        old fallback looked exactly like a pre-migration schema, so ingestion
+        silently discarded the columns it did not list.
+        """
+        if getattr(self, "_cached_profile_cols", None) is None:
             try:
                 with self.mysql_engine.connect() as conn:
-                    rows = conn.execute(text("SHOW COLUMNS FROM argo_profiles")).fetchall()
-                    self._cached_profile_cols = {row[0] for row in rows}
+                    rows = conn.execute(
+                        text("SHOW COLUMNS FROM argo_profiles")
+                    ).fetchall()
             except Exception as e:
-                logging.warning(f"Could not inspect argo_profiles columns: {e}")
-                self._cached_profile_cols = {
-                    "float_id", "cycle_number", "profile_time", "latitude", "longitude",
-                    "pressure", "temperature", "salinity", "bgc_params"
-                }
+                raise RuntimeError(
+                    "Could not inspect the argo_profiles schema, so no profile "
+                    f"was written: {_redact(str(e))}. Check the database "
+                    "connection, then re-run ingestion."
+                ) from e
+            self._cached_profile_cols = {row[0] for row in rows}
         return self._cached_profile_cols
+
+    def _get_profile_unique_keys(self):
+        """
+        Returns every UNIQUE index on argo_profiles as a tuple of column tuples.
+
+        A failed inspection is raised rather than treated as "no constraint",
+        because the constraints decide whether a profile can be stored at all.
+        """
+        cached = getattr(self, "_cached_profile_unique_keys", self._UNCACHED)
+        if cached is not self._UNCACHED:
+            return cached
+        try:
+            with self.mysql_engine.connect() as conn:
+                rows = conn.execute(
+                    text("SHOW INDEX FROM argo_profiles")
+                ).mappings().fetchall()
+        except Exception as e:
+            raise RuntimeError(
+                "Could not inspect the argo_profiles indexes, so no profile was "
+                f"written: {_redact(str(e))}. Check the database connection, "
+                "then re-run ingestion."
+            ) from e
+
+        indexes = {}
+        for row in rows:
+            if row["Key_name"] == "PRIMARY" or int(row["Non_unique"]) != 0:
+                continue
+            indexes.setdefault(row["Key_name"], []).append(
+                (int(row["Seq_in_index"]), row["Column_name"])
+            )
+        self._cached_profile_unique_keys = tuple(
+            tuple(column for _, column in sorted(columns))
+            for columns in indexes.values()
+        )
+        return self._cached_profile_unique_keys
+
+    def _validate_profile_schema(self, payload_keys):
+        """
+        Refuses to write a profile into a database that would lose its data.
+        """
+        columns = self._get_profile_table_columns()
+
+        missing = sorted(self.REQUIRED_PROFILE_COLUMNS - columns)
+        if missing:
+            raise RuntimeError(
+                "argo_profiles is missing required column(s):                 "+ ", ".join(missing)
+                + ". Apply backend/migrations/"
+                "V2__add_qc_adjusted_provenance_and_bgc_columns.sql, "
+                "V3__profile_identity_and_optional_position.sql and "
+                "V4__logical_profile_identity_and_bgc_axis.sql before "
+                "ingesting; refusing to discard that data silently."
+            )
+
+        unknown = sorted(set(payload_keys) - columns)
+        if unknown:
+            raise RuntimeError(
+                "insert_profile received field(s) that argo_profiles does not "
+                "have: " + ", ".join(unknown)
+                + ". Add a migration for them instead of dropping the values."
+            )
+
+        unique_keys = self._get_profile_unique_keys()
+        identity = self.PROFILE_IDENTITY_KEY
+        if identity not in unique_keys:
+            raise RuntimeError(
+                "argo_profiles has no UNIQUE KEY " + str(identity) + " (found "
+                + str(unique_keys) + "). Apply backend/migrations/"
+                "V4__logical_profile_identity_and_bgc_axis.sql; without it, the "
+                "core and BGC products of one profile cannot share a row."
+            )
+
+        # A unique key that omits part of the identity distinguishes fewer
+        # profiles than the model does, so it would reject a legitimate second
+        # row (an ascending/descending pair, or a merged BGC record).
+        identity_columns = set(identity)
+        narrower = [
+            key for key in unique_keys
+            if key != identity and not identity_columns <= set(key)
+        ]
+        if narrower:
+            raise RuntimeError(
+                "argo_profiles still has a UNIQUE KEY narrower than the logical "
+                "identity: " + str(narrower[0]) + ". Every unique key must "
+                "include " + str(identity) + ", otherwise a legitimate profile "
+                "is rejected. Drop it as described in backend/migrations/"
+                "V4__logical_profile_identity_and_bgc_axis.sql."
+            )
 
     def insert_profile(self, profile_data):
         """
         Inserts a new ARGO profile into MySQL.
-        Dynamically adapts to available columns in argo_profiles to support
-        both pre-migration and post-migration database schemas.
+
+        The schema is validated first: every column the payload writes must
+        exist, and profile identity must be
+        (float_id, cycle_number, direction, profile_time). Re-ingesting a
+        profile that is already stored is prevented by the caller's existence
+        check and, as a backstop, by that unique key.
         """
 
         logging.info("Inserting profile into MySQL...")
 
-        table_cols = self._get_profile_table_columns()
-        insert_keys = [k for k in profile_data.keys() if k in table_cols]
+        self._validate_profile_schema(profile_data.keys())
+
+        insert_keys = list(profile_data.keys())
         if not insert_keys:
             raise ValueError("No valid columns provided for argo_profiles insertion.")
 
@@ -359,7 +526,9 @@ class DatabaseManager:
         lon,
         pressure,
         temperature,
-        salinity
+        salinity,
+        direction=None,
+        bgc_keys=None
     ):
         """
         Creates a compact structured text representation of an ARGO
@@ -390,19 +559,29 @@ class DatabaseManager:
         temperature_values = clean_value(temperature)
         salinity_values = clean_value(salinity)
 
+        # A profile without a GPS fix is still a real profile; say so instead of
+        # printing "None" as though it were a coordinate.
+        latitude_text = "unavailable (no position fix)" if lat is None else lat
+        longitude_text = "unavailable (no position fix)" if lon is None else lon
+
+        direction_text = {"A": "ascending", "D": "descending"}.get(
+            direction, "not recorded")
+        bgc_text = ", ".join(sorted(bgc_keys)) if bgc_keys else "none"
+
         document = f"""
 ARGO Oceanographic Profile
 
 Profile ID: {profile_id_db}
 Float WMO ID: {float_id_db}
 Cycle Number: {cycle}
+Profile Direction: {direction_text}
 
 Date and Time:
 {time}
 
 Location:
-Latitude: {lat}
-Longitude: {lon}
+Latitude: {latitude_text}
+Longitude: {longitude_text}
 
 Depth / Pressure Measurements:
 {json.dumps(pressure_values)}
@@ -412,6 +591,9 @@ Temperature Measurements:
 
 Salinity Measurements:
 {json.dumps(salinity_values)}
+
+Bio-geochemical Parameters (stored with their own pressure axis):
+{bgc_text}
 
 This document represents an oceanographic profile collected by an ARGO
 profiling float. The measurements describe how temperature and salinity
@@ -435,7 +617,8 @@ vary with depth at the recorded geographic location and time.
         bgc_keys,
         pressure,
         temperature,
-        salinity
+        salinity,
+        direction=None
     ):
         """
         Creates an embedding for an ARGO profile and stores it in ChromaDB.
@@ -455,6 +638,142 @@ vary with depth at the recorded geographic location and time.
         # Create structured document
         # -----------------------------------------------------
 
+        document_id, document, metadata = self._build_profile_vector_payload(
+            profile_id_db=profile_id_db,
+            float_id_db=float_id_db,
+            cycle=cycle,
+            time=time,
+            lat=lat,
+            lon=lon,
+            bgc_keys=bgc_keys,
+            pressure=pressure,
+            temperature=temperature,
+            salinity=salinity,
+            direction=direction
+        )
+
+        # -----------------------------------------------------
+        # Generate embedding
+        # -----------------------------------------------------
+
+        embedding = self._embed_document(document)
+
+        # -----------------------------------------------------
+        # Store in ChromaDB
+        # -----------------------------------------------------
+
+        self.chroma_collection.add(
+            ids=[document_id],
+
+            embeddings=[embedding],
+
+            documents=[document],
+
+            metadatas=[metadata]
+        )
+
+        logging.info(
+            f"Profile {profile_id_db} added to ChromaDB."
+        )
+
+    # ---------------------------------------------------------
+    # PROFILE VECTOR PAYLOAD AND METADATA
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _bgc_parameter_names(bgc_keys):
+        """
+        Sorted, de-duplicated BGC parameter names of one profile.
+
+        Only parameters actually stored with the profile reach this function
+        (the ingestion and reconciliation paths pass the keys of the row's
+        ``bgc_params``), never the whole parameter catalogue.
+        """
+
+        if bgc_keys is None:
+            return ()
+
+        if isinstance(bgc_keys, dict):
+            bgc_keys = bgc_keys.keys()
+
+        return tuple(sorted({str(key) for key in bgc_keys if key}))
+
+    def _build_profile_metadata(
+        self,
+        profile_id_db,
+        float_id_db,
+        cycle,
+        time,
+        lat,
+        lon,
+        bgc_keys=None,
+        direction=None
+    ):
+        """
+        Builds the ChromaDB metadata for one profile.
+
+        ChromaDB metadata values must be scalars (``bool``, ``int``, ``float``
+        or ``str``). ``bgc_parameters`` is therefore a sorted comma-separated
+        string: a list is not usable in a ``where`` filter, and the names are
+        still readable. ``bgc_parameter_count`` gives the number of names for
+        range filters.
+
+        ``product_type`` describes the stored profile content, not the source
+        file name: ``core_bgc`` when the profile carries at least one BGC
+        parameter, ``core`` when it carries none.
+        """
+
+        parameters = self._bgc_parameter_names(bgc_keys)
+
+        metadata = {
+            "profile_id_sql": int(profile_id_db),
+            "float_id_sql": int(float_id_db),
+            "cycle_number": int(cycle),
+            "date": time.strftime("%Y-%m-%d"),
+            "has_bgc": bool(parameters),
+            "product_type": (
+                self.PRODUCT_TYPE_CORE_BGC if parameters
+                else self.PRODUCT_TYPE_CORE
+            ),
+            "bgc_parameters": ",".join(parameters),
+            "bgc_parameter_count": len(parameters)
+        }
+
+        # ChromaDB metadata cannot store None, and 0, 0 would be an invented
+        # position. A profile without a fix is recorded by the missing keys.
+        if lat is not None and lon is not None:
+            metadata["latitude"] = float(lat)
+            metadata["longitude"] = float(lon)
+
+        # ChromaDB metadata cannot store None. An unknown direction is omitted
+        # rather than stored as a value it does not have.
+        if direction in ("A", "D"):
+            metadata["direction"] = direction
+
+        return metadata
+
+    def _build_profile_vector_payload(
+        self,
+        profile_id_db,
+        float_id_db,
+        cycle,
+        time,
+        lat,
+        lon,
+        bgc_keys,
+        pressure,
+        temperature,
+        salinity,
+        direction=None
+    ):
+        """
+        Document id, document text and metadata for one profile.
+
+        Deterministic: the same stored row always yields the same id, text and
+        metadata, which is what lets a missing vector be rebuilt without
+        creating a duplicate.
+        """
+
         document = self._create_profile_document(
             profile_id_db=profile_id_db,
             float_id_db=float_id_db,
@@ -464,43 +783,185 @@ vary with depth at the recorded geographic location and time.
             lon=lon,
             pressure=pressure,
             temperature=temperature,
-            salinity=salinity
+            salinity=salinity,
+            direction=direction,
+            bgc_keys=list(self._bgc_parameter_names(bgc_keys)) or None
         )
 
-        # -----------------------------------------------------
-        # Generate embedding
-        # -----------------------------------------------------
+        metadata = self._build_profile_metadata(
+            profile_id_db=profile_id_db,
+            float_id_db=float_id_db,
+            cycle=cycle,
+            time=time,
+            lat=lat,
+            lon=lon,
+            bgc_keys=bgc_keys,
+            direction=direction
+        )
 
-        embedding = self.embedding_model.encode(
-            document
-        ).tolist()
+        return f"profile_{int(profile_id_db)}", document, metadata
 
-        # -----------------------------------------------------
-        # Store in ChromaDB
-        # -----------------------------------------------------
+    def _embed_document(self, document):
+        return self.embedding_model.encode(document).tolist()
 
-        document_id = f"profile_{profile_id_db}"
+    # ---------------------------------------------------------
+    # VECTOR RECONCILIATION
+    # ---------------------------------------------------------
 
-        self.chroma_collection.add(
+    def get_profile_vector_record(self, profile_id_db):
+        """
+        Returns the stored values a profile's vector is rebuilt from, or None.
+
+        Only these columns are read: the vector is derived from the committed
+        row, and no measurement or identity is ever written back.
+        """
+
+        with self.mysql_engine.connect() as conn:
+
+            row = conn.execute(
+                text("""
+                    SELECT p.profile_id, p.float_id, f.wmo_number,
+                           p.cycle_number, p.profile_time, p.direction,
+                           p.latitude, p.longitude, p.pressure, p.temperature,
+                           p.salinity, p.bgc_params
+                    FROM argo_profiles p
+                    JOIN argo_floats f ON f.float_id = p.float_id
+                    WHERE p.profile_id = :pid
+                """),
+                {"pid": profile_id_db}
+            ).mappings().fetchone()
+
+        if row is None:
+            return None
+
+        def decoded(value):
+            # A JSON column may come back as text or already decoded.
+            if value is None or value == "":
+                return None
+
+            if isinstance(value, (bytes, bytearray)):
+                value = value.decode("utf-8")
+
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except ValueError:
+                    return None
+
+            return value
+
+        return {
+            "profile_id": int(row["profile_id"]),
+            "float_id": int(row["float_id"]),
+            "wmo_number": int(row["wmo_number"]),
+            "cycle_number": int(row["cycle_number"]),
+            "profile_time": row["profile_time"],
+            "direction": row["direction"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "pressure": decoded(row["pressure"]),
+            "temperature": decoded(row["temperature"]),
+            "salinity": decoded(row["salinity"]),
+            "bgc_params": decoded(row["bgc_params"]) or {}
+        }
+
+    def add_profile_from_row(self, profile_id_db):
+        """
+        Writes the vector of a just-inserted profile from its stored row.
+
+        The row is read back instead of reusing the ingestion payload, so the
+        vector is built from exactly the values a later reconciliation reads:
+        the WMO number rather than the internal float id, and the FLOAT
+        position columns rather than the full-precision source coordinates.
+        Without that, every reconciliation would rewrite an unchanged vector.
+        """
+
+        record = self.get_profile_vector_record(profile_id_db)
+
+        if record is None:
+            raise ValueError(
+                f"profile {profile_id_db} is not stored, so its vector cannot "
+                "be built from the relational record"
+            )
+
+        self.add_profile_to_chromadb(
+            record["profile_id"],
+            record["wmo_number"],
+            record["cycle_number"],
+            record["profile_time"],
+            record["latitude"],
+            record["longitude"],
+            list(record["bgc_params"]),
+            record["pressure"],
+            record["temperature"],
+            record["salinity"],
+            direction=record["direction"]
+        )
+
+    def sync_profile_vector(self, profile_id_db):
+        """
+        Makes the vector of a stored profile exist and match its row.
+
+        Returns ``unchanged``, ``recreated`` or ``updated``. The relational row
+        is authoritative: the document, metadata and embedding are rebuilt from
+        it. A vector that already matches is not rewritten, and the
+        deterministic id keeps a repair from creating a duplicate. A failure is
+        raised, so the run reports it and the next run retries.
+        """
+
+        record = self.get_profile_vector_record(profile_id_db)
+
+        if record is None:
+            raise ValueError(
+                f"profile {profile_id_db} is not stored, so its vector cannot "
+                "be rebuilt from the relational record"
+            )
+
+        document_id, document, metadata = self._build_profile_vector_payload(
+            profile_id_db=record["profile_id"],
+            float_id_db=record["wmo_number"],
+            cycle=record["cycle_number"],
+            time=record["profile_time"],
+            lat=record["latitude"],
+            lon=record["longitude"],
+            bgc_keys=record["bgc_params"],
+            pressure=record["pressure"],
+            temperature=record["temperature"],
+            salinity=record["salinity"],
+            direction=record["direction"]
+        )
+
+        existing = self.chroma_collection.get(
+            ids=[document_id], include=["documents", "metadatas"]
+        )
+        existing_ids = (existing or {}).get("ids") or []
+
+        if not existing_ids:
+
+            self.add_profile_from_row(profile_id_db)
+
+            logging.info(
+                f"Profile {profile_id_db}: ChromaDB vector recreated.")
+
+            return "recreated"
+
+        current_document = (existing.get("documents") or [None])[0]
+        current_metadata = (existing.get("metadatas") or [None])[0]
+
+        if (current_document == document
+                and dict(current_metadata or {}) == metadata):
+            return "unchanged"
+
+        self.chroma_collection.update(
             ids=[document_id],
-
-            embeddings=[embedding],
-
+            embeddings=[self._embed_document(document)],
             documents=[document],
-
-            metadatas=[{
-                "profile_id_sql": int(profile_id_db),
-                "float_id_sql": int(float_id_db),
-                "cycle_number": int(cycle),
-                "latitude": float(lat),
-                "longitude": float(lon),
-                "date": time.strftime("%Y-%m-%d")
-            }]
+            metadatas=[metadata]
         )
 
-        logging.info(
-            f"Profile {profile_id_db} added to ChromaDB."
-        )
+        logging.info(f"Profile {profile_id_db}: ChromaDB vector updated.")
+
+        return "updated"
 
     # ---------------------------------------------------------
     # DATA EXPLORER HELPERS
